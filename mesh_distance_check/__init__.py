@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 2, 0),
+    "version": (0, 2, 1),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -120,12 +120,14 @@ class MESH_OT_distance_heatmap(bpy.types.Operator):
             self.report({"ERROR"}, "La mesh di destinazione non ha una superficie misurabile.")
             return {"CANCELLED"}
 
-        low = format_distance(context.scene, min(distances))
-        high = format_distance(context.scene, max(distances))
-        legend = f"Heatmap {source.name} → {target.name} | Rosso {low} · Blu {high}"
+        low, high = min(distances), max(distances)
+        labels = tuple(
+            format_distance(context.scene, value) for value in (low, (low + high) / 2, high)
+        )
         data = overlay.scene_results(context.scene)
-        data.heatmap = overlay.Heatmap(points, faces, distances, legend)
+        data.heatmap = overlay.Heatmap(points, faces, distances, target.name, labels, low == high)
         data.batch = None
+        data.legend_batch = None
         overlay.redraw()
         return {"FINISHED"}
 

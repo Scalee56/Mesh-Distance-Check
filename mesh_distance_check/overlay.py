@@ -7,9 +7,18 @@ import bpy
 import gpu
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 from gpu_extras.batch import batch_for_shader
+from mathutils import Matrix
 
-NEAR = (0.98, 0.26, 0.11, 0.85)
-FAR = (0.10, 0.54, 1.0, 0.85)
+# Color stops from the Mesh Thickness Analyzer reference.
+HEAT_STOPS = (
+    (0.00, 1.0, 0.0, 0.0),
+    (0.20, 1.0, 0.0, 0.4),
+    (0.35, 1.0, 0.45, 0.0),
+    (0.55, 0.9, 0.95, 0.0),
+    (0.75, 0.1, 0.85, 0.1),
+    (1.00, 0.0, 0.25, 1.0),
+)
+LEGEND_TEXT = (0.96, 0.97, 0.99, 1.0)
 MINIMUM = (1.0, 0.77, 0.25, 1.0)
 PROBE = (0.35, 1.0, 0.63, 1.0)
 
@@ -27,7 +36,9 @@ class Heatmap:
     points: list
     faces: list
     distances: list
-    legend: str
+    target: str
+    labels: tuple
+    uniform: bool
 
 
 class Results:
@@ -35,6 +46,8 @@ class Results:
     probe = None
     heatmap = None
     batch = None
+    legend_batch = None
+    heat_shader = None
 
 
 results = {}
@@ -52,26 +65,61 @@ def redraw():
                 area.tag_redraw()
 
 
+def make_heat_shader():
+    interface = gpu.types.GPUStageInterfaceInfo("distance_heatmap_values")
+    interface.smooth("FLOAT", "sampleValue")
+    shader = gpu.types.GPUShaderCreateInfo()
+    shader.push_constant("MAT4", "transform")
+    shader.push_constant("FLOAT", "opacity")
+    shader.vertex_in(0, "VEC3", "pos")
+    shader.vertex_in(1, "FLOAT", "fraction")
+    shader.vertex_out(interface)
+    shader.fragment_out(0, "VEC4", "outColor")
+    shader.vertex_source("""
+        void main() {
+            sampleValue = fraction;
+            gl_Position = transform * vec4(pos, 1.0);
+        }
+    """)
+    # Interpolate the measured distance first, then map it to a color.
+    clauses = []
+    for first, second in zip(HEAT_STOPS, HEAT_STOPS[1:]):
+        low, *near = first
+        high, *far = second
+        near_rgb = ", ".join(map(str, near))
+        far_rgb = ", ".join(map(str, far))
+        clauses.append(
+            f"if (t <= {high}) return mix(vec3({near_rgb}), vec3({far_rgb}), "
+            f"(t - {low}) / ({high} - {low}));"
+        )
+    shader.fragment_source(
+        "vec3 palette(float t) { " + " ".join(clauses) + " return vec3(0.0, 0.25, 1.0); }"
+        "void main() { outColor = vec4(palette(clamp(sampleValue, 0.0, 1.0)), opacity); }"
+    )
+    return gpu.shader.create_from_info(shader)
+
+
 def draw_heatmap(data):
-    shader = gpu.shader.from_builtin("SMOOTH_COLOR")
+    if data.heat_shader is None:
+        data.heat_shader = make_heat_shader()
+    shader = data.heat_shader
     if data.batch is None:
         heatmap = data.heatmap
         low, high = min(heatmap.distances), max(heatmap.distances)
         span = high - low
         fractions = [(d - low) / span if span else 0.0 for d in heatmap.distances]
-        colors = [tuple(a + t * (b - a) for a, b in zip(NEAR, FAR)) for t in fractions]
         data.batch = batch_for_shader(
-            shader, "TRIS", {"pos": heatmap.points, "color": colors}, indices=heatmap.faces
+            shader, "TRIS", {"pos": heatmap.points, "fraction": fractions}, indices=heatmap.faces
         )
     gpu.state.depth_test_set("LESS_EQUAL")
     gpu.state.blend_set("ALPHA")
     # Bias clip-space depth slightly to prevent flickering against the source faces.
     projection = gpu.matrix.get_projection_matrix()
     projection[2] = projection[2] - 0.00002 * projection[3]
-    with gpu.matrix.push_pop_projection():
-        gpu.matrix.load_projection_matrix(projection)
-        shader.bind()
-        data.batch.draw(shader)
+    shader.bind()
+    shader.uniform_float("transform", projection @ gpu.matrix.get_model_view_matrix())
+    shader.uniform_float("opacity", 0.94)
+    data.batch.draw(shader)
 
 
 def draw_measurement(measurement, region, width):
@@ -127,6 +175,34 @@ def text_at(text, x, y, color):
     blf.disable(0, blf.SHADOW)
 
 
+def draw_legend(data, region):
+    heatmap = data.heatmap
+    x, y, width = 40, 60, 24
+    height = min(220, max(16, region.height - 165))
+    if data.heat_shader is None:
+        data.heat_shader = make_heat_shader()
+    shader = data.heat_shader
+    # Geometry stays in normalized coordinates so resizing only changes the transform.
+    if data.legend_batch is None:
+        fractions = (0.0, 0.0, 0.0, 0.0) if heatmap.uniform else (0.0, 0.0, 1.0, 1.0)
+        data.legend_batch = batch_for_shader(shader, "TRI_STRIP", {
+            "pos": ((0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)),
+            "fraction": fractions,
+        })
+    shader.bind()
+    transform = Matrix.Translation((x, y, 0)) @ Matrix.Diagonal((width, height, 1, 1))
+    shader.uniform_float(
+        "transform", gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix() @ transform
+    )
+    shader.uniform_float("opacity", 1.0)
+    data.legend_batch.draw(shader)
+
+    text_at(f"Distanza → {heatmap.target}", x, y + height + 14, LEGEND_TEXT)
+    labels = ((0.5, heatmap.labels[0]),) if heatmap.uniform else zip((0, 0.5, 1), heatmap.labels)
+    for fraction, label in labels:
+        text_at(label, x + width + 10, y + fraction * height - 5, LEGEND_TEXT)
+
+
 def draw_labels():
     data = current_results()
     if data is None:
@@ -135,8 +211,8 @@ def draw_labels():
     region, view = context.region, context.region_data
     y = 48
     if data.heatmap is not None:
-        text_at(data.heatmap.legend, 18, y, (1.0, 1.0, 1.0, 1.0))
-        y += 22
+        draw_legend(data, region)
+        y = 18
     for index, measurement in enumerate((data.minimum, data.probe)):
         if measurement is None:
             continue

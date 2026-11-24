@@ -12,7 +12,7 @@ Add-on per Blender 4.2 o versioni successive. Mostra nella Vista 3D le distanze 
 
 1. In modalità Oggetto seleziona due mesh con facce. Seleziona per ultima la mesh da colorare, così diventa quella attiva.
 2. Premi **Misura distanza minima** per mostrare in giallo il segmento più corto tra le due superfici, con la misura nelle unità della scena. A distanza zero gli estremi coincidono e appare un punto.
-3. Premi **Mostra heatmap** per colorare la mesh attiva. Il rosso indica i campioni più vicini e il blu quelli più lontani. La legenda mostra gli estremi della scala. Le distanze vengono campionate ai vertici della superficie e i colori vengono interpolati sulle facce. Una mesh con pochi vertici produce una heatmap più approssimata.
+3. Premi **Mostra heatmap** per colorare la mesh attiva. La palette a sei colori di Mesh Thickness Analyzer parte dal rosso per le distanze minori e arriva al blu per quelle maggiori. La scala verticale mostra minimo, punto medio e massimo. Le distanze vengono campionate ai vertici della superficie e i colori vengono interpolati sulle facce. Una mesh con pochi vertici produce una heatmap più approssimata.
 
 ## Sonda
 
