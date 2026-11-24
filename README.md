@@ -1,23 +1,25 @@
 # Mesh Distance Check
 
-Add-on per Blender 4.2 o versioni successive. Misura la distanza minima tra le superfici di due oggetti mesh, applicando le trasformazioni globali e usando la geometria risultante dai modificatori.
+Add-on per Blender 4.2 o versioni successive. Mostra nella Vista 3D le distanze tra superfici mesh. Le misure delle superfici tengono conto delle trasformazioni degli oggetti e dei modificatori valutati.
 
 ## Installazione
 
-[Scarica mesh_distance_check.zip](https://github.com/Scalee56/Mesh-Distance-Check/raw/refs/heads/main/mesh_distance_check.zip).
+1. [Scarica mesh_distance_check.zip](https://github.com/Scalee56/Mesh-Distance-Check/raw/refs/heads/main/mesh_distance_check.zip).
+2. In Blender apri **Modifica → Preferenze → Add-on**, scegli **Installa da disco** dal menu e seleziona lo ZIP.
+3. Attiva **Mesh Distance Check**. Nella Vista 3D premi **N** e apri la scheda **Mesh Distance**. Per vedere le misure, tieni attive le sovrapposizioni della viewport.
 
-1. Apri **Modifica → Preferenze → Add-on**.
-2. Dal menu nell'angolo in alto a destra scegli **Installa da disco** e seleziona `mesh_distance_check.zip`.
-3. Attiva **Mesh Distance Check**.
+## Distanza minima e heatmap
 
-## Uso
+1. In modalità Oggetto seleziona due mesh con facce. Seleziona per ultima la mesh da colorare, così diventa quella attiva.
+2. Premi **Misura distanza minima** per mostrare in giallo il segmento più corto tra le due superfici, con la misura nelle unità della scena. A distanza zero gli estremi coincidono e appare un punto.
+3. Premi **Mostra heatmap** per colorare la mesh attiva. Il rosso indica i campioni più vicini e il blu quelli più lontani. La legenda mostra gli estremi della scala. Le distanze vengono campionate ai vertici della superficie e i colori vengono interpolati sulle facce. Una mesh con pochi vertici produce una heatmap più approssimata.
 
-1. Seleziona due oggetti mesh in modalità Oggetto.
-2. Nella Vista 3D premi **N** e apri la scheda **Mesh Distance**.
-3. Premi **Misura distanza minima** per vedere il risultato nelle unità della scena.
+## Sonda
 
-Le superfici a contatto o che si intersecano hanno distanza zero, entro la precisione numerica di Blender. Se una mesh chiusa è interamente contenuta in un'altra con uno spazio tra le superfici, il risultato è la distanza positiva tra le due superfici. Entrambe le mesh devono avere facce.
+Entra in modalità Modifica sulla mesh sorgente e seleziona un vertice in modalità di selezione vertici. Nel pannello **Mesh Distance**, scegli una **Destinazione** o lascia il campo vuoto per cercare fra le altre mesh visibili. Premi **Misura dal vertice selezionato**. La linea verde mostra il percorso dal vertice della mesh in modifica al punto più vicino sulla superficie di destinazione.
+
+Le sovrapposizioni mostrano il risultato dell'ultima misurazione. Ricalcolale dopo aver spostato o modificato una mesh. Usa **Cancella risultati** per rimuoverle. Una mesh completamente contenuta in un'altra può avere una distanza positiva se le superfici sono separate.
 
 ## Prova rapida
 
-Con due cubi standard larghi 2 unità e i centri a X=0 e X=3, la distanza attesa è 1 unità Blender. Sposta il secondo centro a X=1 per ottenere 0.
+Crea due cubi standard larghi 2 unità con i centri a X=0 e X=3. Il minimo atteso è 1 unità Blender. Per provare la sonda, seleziona un vertice del primo cubo sulla faccia rivolta verso il secondo: anche la sonda deve indicare 1 unità. Sposta il secondo centro a X=1 e ricalcola il minimo per ottenere 0.

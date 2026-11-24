@@ -34,22 +34,29 @@ def closest_on_triangle(point, triangle):
     return closest_point_on_tri(point, *triangle)
 
 
-def crosses_triangle(edge, triangle):
+def edge_hit(edge, triangle):
     start, end = edge
     direction = end - start
     length = direction.length
     if length == 0:
-        return False
+        return None
     unit = direction / length
     hit = intersect_ray_tri(*triangle, unit, start, True)
-    return hit is not None and 0 <= (hit - start).dot(unit) <= length
+    if hit is not None and 0 <= (hit - start).dot(unit) <= length:
+        return hit
+    return None
 
 
-def segment_distance_squared(first, second):
+def distance_squared(pair):
+    first, second = pair
+    return (first - second).length_squared
+
+
+def closest_segments(first, second):
     a, b = first
     c, d = second
-    candidates = [(p - project(p, c, d)).length_squared for p in first]
-    candidates.extend((p - project(p, a, b)).length_squared for p in second)
+    candidates = [(p, project(p, c, d)) for p in first]
+    candidates.extend((project(q, a, b), q) for q in second)
     if a != b and c != d:
         pair = intersect_line_line(a, b, c, d)
         if pair is not None:
@@ -57,21 +64,22 @@ def segment_distance_squared(first, second):
             _, first_factor = intersect_point_line(p, a, b)
             _, second_factor = intersect_point_line(q, c, d)
             if 0 <= first_factor <= 1 and 0 <= second_factor <= 1:
-                candidates.append((p - q).length_squared)
-    return min(candidates)
+                candidates.append(pair)
+    return min(candidates, key=distance_squared)
 
 
-def triangle_distance_squared(first, second):
+def closest_triangles(first, second):
     first_edges, second_edges = edges(first), edges(second)
-    if any(crosses_triangle(edge, second) for edge in first_edges):
-        return 0.0
-    if any(crosses_triangle(edge, first) for edge in second_edges):
-        return 0.0
-    return min(
-        min((p - closest_on_triangle(p, second)).length_squared for p in first),
-        min((p - closest_on_triangle(p, first)).length_squared for p in second),
-        min(segment_distance_squared(a, b) for a in first_edges for b in second_edges),
-    )
+    for source, target in ((first_edges, second), (second_edges, first)):
+        for edge in source:
+            hit = edge_hit(edge, target)
+            if hit is not None:
+                return hit, hit
+
+    candidates = [(p, closest_on_triangle(p, second)) for p in first]
+    candidates.extend((closest_on_triangle(q, first), q) for q in second)
+    candidates.extend(closest_segments(a, b) for a in first_edges for b in second_edges)
+    return min(candidates, key=distance_squared)
 
 
 class Node:
@@ -96,7 +104,8 @@ def bounds_distance_squared(a, b):
     )
 
 
-def surface_distance(first, second):
+def closest_surfaces(first, second):
+    closest = None
     best = float("inf")
     pending = [(Node(list(first)), Node(list(second)))]
     while pending:
@@ -110,9 +119,16 @@ def surface_distance(first, second):
         else:
             for triangle_a in a.triangles:
                 for triangle_b in b.triangles:
-                    best = min(best, triangle_distance_squared(triangle_a, triangle_b))
-                    if best == 0:
-                        return 0.0
+                    pair = closest_triangles(triangle_a, triangle_b)
+                    squared = distance_squared(pair)
+                    if squared < best:
+                        closest, best = pair, squared
+                        if best == 0:
+                            return closest
             continue
         pending.extend(sorted(pairs, key=lambda pair: bounds_distance_squared(*pair), reverse=True))
-    return best ** 0.5
+    return closest
+
+
+def surface_distance(first, second):
+    return distance_squared(closest_surfaces(first, second)) ** 0.5
