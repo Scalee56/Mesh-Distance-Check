@@ -1,18 +1,25 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 2, 1),
+    "version": (0, 2, 2),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
     "category": "Mesh",
 }
 
+import sys
+from importlib import import_module
+
 import bmesh
 import bpy
 from mathutils.bvhtree import BVHTree
 
-from . import overlay
-from .geometry import closest_surfaces
+# Blender can reload the add-on package during an update while leaving its
+# child modules in memory. Import both children from the newly installed files.
+sys.modules.pop(f"{__name__}.geometry", None)
+sys.modules.pop(f"{__name__}.overlay", None)
+geometry = import_module(".geometry", __name__)
+overlay = import_module(".overlay", __name__)
 
 
 def selected_meshes(context):
@@ -74,7 +81,7 @@ class MESH_OT_check_surface_distance(bpy.types.Operator):
             self.report({"ERROR"}, "Entrambe le mesh devono avere almeno una faccia.")
             return {"CANCELLED"}
 
-        start, end = closest_surfaces(*surfaces)
+        start, end = geometry.closest_surfaces(*surfaces)
         self.distance = (end - start).length
         self.unit_label = format_distance(context.scene, self.distance)
         label = f"Minimo: {self.unit_label}"

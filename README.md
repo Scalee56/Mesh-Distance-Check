@@ -8,6 +8,8 @@ Add-on per Blender 4.2 o versioni successive. Mostra nella Vista 3D le distanze 
 2. In Blender apri **Modifica → Preferenze → Add-on**, scegli **Installa da disco** dal menu e seleziona lo ZIP.
 3. Attiva **Mesh Distance Check**. Nella Vista 3D premi **N** e apri la scheda **Mesh Distance**. Per vedere le misure, tieni attive le sovrapposizioni della viewport.
 
+Se un aggiornamento precedente ha restituito `cannot import name 'closest_surfaces'`, installa lo ZIP aggiornato. Se Blender ha ancora la vecchia sessione aperta, chiudilo e riaprilo prima di attivare l’add-on.
+
 ## Distanza minima e heatmap
 
 1. In modalità Oggetto seleziona due mesh con facce. Seleziona per ultima la mesh da colorare, così diventa quella attiva.
