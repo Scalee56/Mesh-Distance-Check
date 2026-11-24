@@ -1,7 +1,8 @@
 """Distanza minima tra superfici triangolate, in coordinate globali."""
 
-from itertools import combinations
-from math import ceil
+from heapq import heappop, heappush
+from itertools import count
+from math import ceil, inf, log2, sqrt
 
 from mathutils.geometry import (
     closest_point_on_tri,
@@ -92,12 +93,15 @@ class Node:
         self.count = len(triangles)
         self.children = ()
         self.triangles = triangles
-        if self.count > 4:
+
+    def split(self):
+        if not self.children:
             axis = max(range(3), key=lambda i: self.high[i] - self.low[i])
-            triangles.sort(key=lambda tri: sum(point[axis] for point in tri))
+            self.triangles.sort(key=lambda tri: sum(point[axis] for point in tri))
             middle = self.count // 2
-            self.children = (Node(triangles[:middle]), Node(triangles[middle:]))
+            self.children = (Node(self.triangles[:middle]), Node(self.triangles[middle:]))
             self.triangles = ()
+        return self.children
 
 
 def bounds_distance_squared(a, b):
@@ -111,21 +115,41 @@ def closest_surfaces(first, second):
     return closest_components((first, second))
 
 
-def closest_components(surfaces):
+def closest_components(surfaces, tolerance=0.0):
+    """Return a real surface pair, stopping once its error is bounded by tolerance."""
     closest = None
-    best = float("inf")
+    best, limit = inf, inf
     roots = [Node(list(surface)) for surface in surfaces]
-    pending = sorted(
-        combinations(roots, 2), key=lambda pair: bounds_distance_squared(*pair), reverse=True
-    )
+    groups = ComponentZone([(root.low, root.high, index, root) for index, root in enumerate(roots)])
+    order = count()
+
+    def entry(a, b):
+        if a is not b:
+            # A component leaf unwraps to its triangle hierarchy.
+            if isinstance(a, ComponentZone) and a.tree is not None:
+                a = a.tree
+            if isinstance(b, ComponentZone) and b.tree is not None:
+                b = b.tree
+        return bounds_distance_squared(a, b), a is b, a.count + b.count, next(order), a, b
+
+    pending = [entry(groups, groups)]
     while pending:
-        a, b = pending.pop()
-        if bounds_distance_squared(a, b) >= best:
-            continue
-        if a.children and (not b.children or a.count >= b.count):
-            pairs = [(child, b) for child in a.children]
-        elif b.children:
-            pairs = [(a, child) for child in b.children]
+        bound, _, _, _, a, b = heappop(pending)
+        if bound >= limit:
+            break
+        if a is b:
+            if not a.children:
+                continue
+            left, right = a.children
+            pairs = ((left, left), (left, right), (right, right))
+        elif isinstance(a, ComponentZone):
+            pairs = ((child, b) for child in a.children)
+        elif isinstance(b, ComponentZone):
+            pairs = ((a, child) for child in b.children)
+        elif a.count > 4 and a.count >= b.count:
+            pairs = ((child, b) for child in a.split())
+        elif b.count > 4:
+            pairs = ((a, child) for child in b.split())
         else:
             for triangle_a in a.triangles:
                 for triangle_b in b.triangles:
@@ -133,10 +157,14 @@ def closest_components(surfaces):
                     squared = distance_squared(pair)
                     if squared < best:
                         closest, best = pair, squared
-                        if best == 0:
+                        limit = max(0.0, sqrt(best) - tolerance) ** 2
+                        if bound >= limit:
                             return closest
             continue
-        pending.extend(sorted(pairs, key=lambda pair: bounds_distance_squared(*pair), reverse=True))
+        for pair in pairs:
+            item = entry(*pair)
+            if item[0] < limit:
+                heappush(pending, item)
     return closest
 
 
@@ -156,9 +184,50 @@ def nearest_component(point, trees):
     return nearest
 
 
-def sample_surfaces(surfaces, trees, resolution):
-    """Subdivide long triangles for display only, with a shared spacing and budget."""
-    all_triangles = []
+class ComponentZone:
+    """Spatial index over component bounds, with Blender BVHs at the leaves."""
+
+    def __init__(self, components):
+        self.low = tuple(min(item[0][i] for item in components) for i in range(3))
+        self.high = tuple(max(item[1][i] for item in components) for i in range(3))
+        self.children = ()
+        self.component = None
+        self.count = len(components)
+        self.tree = None
+        if len(components) == 1:
+            _, _, self.component, self.tree = components[0]
+        else:
+            axis = max(range(3), key=lambda i: self.high[i] - self.low[i])
+            components.sort(key=lambda item: item[0][axis] + item[1][axis])
+            middle = len(components) // 2
+            self.children = (ComponentZone(components[:middle]), ComponentZone(components[middle:]))
+
+    def point_bound(self, point):
+        return sum(
+            max(0.0, self.low[i] - point[i], point[i] - self.high[i]) ** 2 for i in range(3)
+        )
+
+    def nearest_distance(self, point, excluded, limit=inf):
+        pending = [(0.0, self)]
+        squared = limit ** 2
+        while pending:
+            bound, zone = pending.pop()
+            if bound >= squared or zone.component == excluded:
+                continue
+            if zone.children:
+                branches = [(child.point_bound(point), child) for child in zone.children
+                            if child.component != excluded]
+                pending.extend(sorted(branches, key=lambda item: item[0], reverse=True))
+            else:
+                _, _, _, distance = zone.tree.find_nearest(point, limit)
+                if distance is not None and distance < limit:
+                    limit, squared = distance, distance ** 2
+        return limit
+
+
+def sample_surfaces(surfaces, trees, resolution, cutoff=None):
+    """Subdivide long triangles in the heatmap, pruning zones beyond the color range."""
+    all_triangles, bounds = [], []
     for points, faces in surfaces:
         triangles = []
         for i, j, k in faces:
@@ -166,49 +235,67 @@ def sample_surfaces(surfaces, trees, resolution):
             length = max((b - a).length, (c - a).length, (c - b).length)
             triangles.append((a, b, c, length))
         all_triangles.append(triangles)
+        low = tuple(min(point[i] for point in points) for i in range(3))
+        high = tuple(max(point[i] for point in points) for i in range(3))
+        bounds.append((low, high))
+    zones = ComponentZone([(*bounds[index], index, tree) for index, tree in trees])
     lengths = [length for triangles in all_triangles for _, _, _, length in triangles]
-    longest = max(lengths)
-    spacing = longest / resolution
+    spacing = max(lengths) / resolution
 
-    def divisions(length):
-        return max(1, ceil(length / spacing)) if spacing else 1
+    def depth(length):
+        return ceil(log2(length / spacing)) if spacing and length > spacing else 0
+
+    def outside_range(a, b, c, component):
+        center = (a + b + c) / 3
+        radius = max((a - center).length, (b - center).length, (c - center).length)
+        # The distance to a surface cannot vary faster than distance from the center.
+        reach = (cutoff + radius) * 1.000001
+        return zones.nearest_distance(center, component, reach) == reach
+
+    far_triangles = set()
+    eligible_lengths = []
+    for component, triangles in enumerate(all_triangles):
+        for index, (a, b, c, length) in enumerate(triangles):
+            if cutoff is not None and length > spacing and outside_range(a, b, c, component):
+                far_triangles.add((component, index))
+            else:
+                eligible_lengths.append(length)
 
     budget = max(300_000, len(lengths))
-    while sum(divisions(length) ** 2 for length in lengths) > budget:
+    while len(far_triangles) + sum(4 ** depth(length) for length in eligible_lengths) > budget:
         spacing *= 1.4
 
+    limit = inf if cutoff is None else cutoff
     points, faces, distances = [], [], []
     for component, triangles in enumerate(all_triangles):
-        vertex_cache = {}
-        targets = [(index, tree) for index, tree in trees if component != index]
+        cache = {}
 
-        def sample(point):
+        def sample(point, saturated=False):
             key = tuple(point)
-            index = vertex_cache.get(key)
+            index = cache.get(key)
             if index is None:
-                _, _, distance = nearest_component(point, targets)
-                index = vertex_cache[key] = len(points)
+                value = limit if saturated else zones.nearest_distance(point, component, limit)
+                index = cache[key] = len(points)
                 points.append(point)
-                distances.append(distance)
+                distances.append(value)
             return index
 
-        for a, b, c, length in triangles:
-            count = divisions(length)
-            if count == 1:
+        def emit(a, b, c, level, check_range=True):
+            if level == 0:
                 faces.append((sample(a), sample(b), sample(c)))
-                continue
+                return
+            if check_range and cutoff is not None and outside_range(a, b, c, component):
+                faces.append((sample(a, True), sample(b, True), sample(c, True)))
+                return
+            ab, bc, ca = (a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5
+            emit(a, ab, ca, level - 1)
+            emit(ab, b, bc, level - 1)
+            emit(ca, bc, c, level - 1)
+            emit(ab, bc, ca, level - 1)
 
-            # A triangular lattice includes both edge and interior samples.
-            ab, ac = b - a, c - a
-            rows = [
-                [sample(a + ab * (i / count) + ac * (j / count))
-                 for j in range(count - i + 1)]
-                for i in range(count + 1)
-            ]
-            for i in range(count):
-                row, next_row = rows[i], rows[i + 1]
-                for j in range(count - i):
-                    faces.append((row[j], next_row[j], row[j + 1]))
-                    if j + 1 < len(next_row):
-                        faces.append((row[j + 1], next_row[j], next_row[j + 1]))
+        for index, (a, b, c, length) in enumerate(triangles):
+            if (component, index) in far_triangles:
+                faces.append((sample(a, True), sample(b, True), sample(c, True)))
+            else:
+                emit(a, b, c, depth(length), check_range=False)
     return points, faces, distances, spacing

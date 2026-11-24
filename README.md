@@ -14,11 +14,11 @@ Se un aggiornamento precedente ha restituito `cannot import name 'closest_surfac
 
 1. In modalità Oggetto seleziona almeno due mesh con facce oppure attiva **Tutte le mesh visibili**.
 2. Premi **Mostra heatmap**. Ogni punto campionato su ciascuna mesh è colorato in base alla superficie più vicina fra le altre mesh dell'analisi. La stessa distanza ha lo stesso colore su tutti i componenti.
-3. Premi **Misura distanza minima** per tracciare il segmento giallo più corto fra tutte le coppie di mesh. A distanza zero gli estremi coincidono e appare un punto.
+3. Premi **Misura distanza minima** per tracciare in giallo una stima del segmento più corto fra tutte le coppie di mesh. La ricerca esamina prima le zone più promettenti e termina quando la distanza può migliorare al massimo di 0,005 mm. Con le unità della scena configurate, la misura viene visualizzata al centesimo di millimetro. Con il sistema unità impostato su Nessuno, resta in BU.
 
-La legenda usa una scala comune che va dal rosso (vicino) al blu (lontano). Con **Fine scala** a zero, usa il minimo e il massimo campionati nell'intero gruppo. Per confrontare analisi diverse, imposta un valore positivo. La scala parte da zero e quel valore corrisponde al blu. Le distanze superiori restano blu.
+La legenda usa una scala comune che va dal rosso (vicino) al blu (lontano). Con **Fine scala** a zero, usa il minimo e il massimo campionati nell'intero gruppo. Per confrontare analisi diverse, imposta un valore positivo. La scala parte da zero e quel valore corrisponde al blu. Le distanze superiori restano blu. Le zone sicuramente oltre il limite saltano il campionamento dettagliato. In automatico vengono campionate anche le aree più lontane, perché servono a determinare la scala.
 
-La heatmap usa campioni aggiuntivi dentro le facce e interpola i valori sulla superficie. Aumenta **Risoluzione** per mostrare zone di vicinanza più piccole e ricalcola. Il pannello indica il passo di campionamento stimato. Nelle scene dense, l'add-on limita la suddivisione della visualizzazione. La linea gialla usa un calcolo separato sulle superfici, senza dipendere dalla risoluzione della heatmap.
+La heatmap usa campioni aggiuntivi dentro le facce e interpola i valori sulla superficie. Aumenta **Risoluzione** per mostrare zone di vicinanza più piccole e ricalcola. Il pannello indica il passo di campionamento stimato. Nelle scene dense, l'add-on limita la suddivisione della visualizzazione. La linea gialla usa una ricerca spaziale separata sulle superfici, indipendente dalla risoluzione e dalla scala della heatmap.
 
 ## Sonda
 

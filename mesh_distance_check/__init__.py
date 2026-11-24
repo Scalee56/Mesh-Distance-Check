@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 3, 0),
+    "version": (0, 3, 1),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -78,7 +78,7 @@ def format_distance(scene, distance):
 class MESH_OT_check_surface_distance(bpy.types.Operator):
     bl_idname = "mesh.check_surface_distance"
     bl_label = "Misura distanza minima"
-    bl_description = "Mostra il segmento più corto tra tutte le mesh incluse nell’analisi"
+    bl_description = "Stima il minimo globale fra le superfici incluse nell’analisi"
 
     distance: bpy.props.FloatProperty(options={"HIDDEN", "SKIP_SAVE"})
     unit_label: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
@@ -93,10 +93,17 @@ class MESH_OT_check_surface_distance(bpy.types.Operator):
             self.report({"ERROR"}, "Servono almeno due mesh con facce.")
             return {"CANCELLED"}
 
-        start, end = geometry.closest_components(triangles(surface) for _, surface in surfaces)
+        units = context.scene.unit_settings
+        tolerance = 0.000005 / units.scale_length
+        start, end = geometry.closest_components(
+            (triangles(surface) for _, surface in surfaces), tolerance=tolerance
+        )
         self.distance = (end - start).length
-        self.unit_label = format_distance(context.scene, self.distance)
-        label = f"Minimo: {self.unit_label}"
+        if units.system == "NONE":
+            self.unit_label = format_distance(context.scene, self.distance)
+        else:
+            self.unit_label = f"{self.distance * units.scale_length * 1000:.2f} mm"
+        label = f"Minimo ≈ {self.unit_label}"
         overlay.scene_results(context.scene).minimum = overlay.Measurement(
             start, end, label, overlay.MINIMUM
         )
@@ -122,14 +129,14 @@ class MESH_OT_distance_heatmap(bpy.types.Operator):
 
         trees = [(index, surface_bvh(surface)) for index, surface in enumerate(surfaces)]
         scene = context.scene
+        cutoff = scene.mesh_distance_scale_max or None
         points, faces, distances, spacing = geometry.sample_surfaces(
-            surfaces, trees, scene.mesh_distance_resolution
+            surfaces, trees, scene.mesh_distance_resolution, cutoff=cutoff
         )
-        sampled_low, sampled_high = min(distances), max(distances)
-        if scene.mesh_distance_scale_max > 0:
-            low, high = 0.0, scene.mesh_distance_scale_max
+        if cutoff is None:
+            low, high = min(distances), max(distances)
         else:
-            low, high = sampled_low, sampled_high
+            low, high = 0.0, cutoff
         labels = tuple(format_distance(scene, value) for value in (low, (low + high) / 2, high))
         data = overlay.scene_results(scene)
         data.heatmap = overlay.Heatmap(
