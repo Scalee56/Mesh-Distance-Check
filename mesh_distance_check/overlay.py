@@ -36,18 +36,20 @@ class Heatmap:
     points: list
     faces: list
     distances: list
-    target: str
+    limits: tuple
     labels: tuple
-    uniform: bool
+    component_count: int
+    spacing: str
 
 
 class Results:
-    minimum = None
-    probe = None
-    heatmap = None
-    batch = None
-    legend_batch = None
-    heat_shader = None
+    def __init__(self):
+        self.minimum = None
+        self.probes = []
+        self.heatmap = None
+        self.batch = None
+        self.legend_batch = None
+        self.heat_shader = None
 
 
 results = {}
@@ -105,7 +107,7 @@ def draw_heatmap(data):
     shader = data.heat_shader
     if data.batch is None:
         heatmap = data.heatmap
-        low, high = min(heatmap.distances), max(heatmap.distances)
+        low, high = heatmap.limits
         span = high - low
         fractions = [(d - low) / span if span else 0.0 for d in heatmap.distances]
         data.batch = batch_for_shader(
@@ -155,9 +157,10 @@ def draw_view():
         if data.heatmap is not None:
             draw_heatmap(data)
         gpu.state.depth_test_set("NONE")
-        for measurement, width in ((data.minimum, 5.0), (data.probe, 3.0)):
-            if measurement is not None:
-                draw_measurement(measurement, bpy.context.region, width)
+        if data.minimum is not None:
+            draw_measurement(data.minimum, bpy.context.region, 5.0)
+        for measurement in data.probes:
+            draw_measurement(measurement, bpy.context.region, 3.0)
     finally:
         gpu.state.depth_test_set("NONE")
         gpu.state.blend_set("NONE")
@@ -182,9 +185,10 @@ def draw_legend(data, region):
     if data.heat_shader is None:
         data.heat_shader = make_heat_shader()
     shader = data.heat_shader
+    uniform = heatmap.limits[0] == heatmap.limits[1]
     # Geometry stays in normalized coordinates so resizing only changes the transform.
     if data.legend_batch is None:
-        fractions = (0.0, 0.0, 0.0, 0.0) if heatmap.uniform else (0.0, 0.0, 1.0, 1.0)
+        fractions = (0.0, 0.0, 0.0, 0.0) if uniform else (0.0, 0.0, 1.0, 1.0)
         data.legend_batch = batch_for_shader(shader, "TRI_STRIP", {
             "pos": ((0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)),
             "fraction": fractions,
@@ -197,8 +201,8 @@ def draw_legend(data, region):
     shader.uniform_float("opacity", 1.0)
     data.legend_batch.draw(shader)
 
-    text_at(f"Distanza → {heatmap.target}", x, y + height + 14, LEGEND_TEXT)
-    labels = ((0.5, heatmap.labels[0]),) if heatmap.uniform else zip((0, 0.5, 1), heatmap.labels)
+    text_at(f"Distanza · {heatmap.component_count} mesh", x, y + height + 14, LEGEND_TEXT)
+    labels = ((0.5, heatmap.labels[0]),) if uniform else zip((0, 0.5, 1), heatmap.labels)
     for fraction, label in labels:
         text_at(label, x + width + 10, y + fraction * height - 5, LEGEND_TEXT)
 
@@ -213,15 +217,19 @@ def draw_labels():
     if data.heatmap is not None:
         draw_legend(data, region)
         y = 18
-    for index, measurement in enumerate((data.minimum, data.probe)):
-        if measurement is None:
-            continue
-        text_at(measurement.label, 18, y, measurement.color)
+    if data.minimum is not None:
+        text_at(data.minimum.label, 18, y, data.minimum.color)
         y += 22
+    if data.probes:
+        text_at(data.probes[-1].label, 18, y, PROBE)
+
+    measurements = ([data.minimum] if data.minimum is not None else []) + data.probes
+    for index, measurement in enumerate(measurements):
         midpoint = (measurement.start + measurement.end) * 0.5
         pos = location_3d_to_region_2d(region, view, midpoint)
         if pos is not None and 0 <= pos.x < region.width and 0 <= pos.y < region.height:
-            text_at(measurement.label, pos.x + 8, pos.y + 8 + index * 18, measurement.color)
+            offset = 18 if data.minimum is not None and index > 0 else 0
+            text_at(measurement.label, pos.x + 8, pos.y + 8 + offset, measurement.color)
 
 
 @bpy.app.handlers.persistent

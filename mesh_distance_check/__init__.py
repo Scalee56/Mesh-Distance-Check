@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 2, 2),
+    "version": (0, 3, 0),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -12,6 +12,7 @@ from importlib import import_module
 
 import bmesh
 import bpy
+from bpy_extras.view3d_utils import region_2d_to_origin_3d, region_2d_to_vector_3d
 from mathutils.bvhtree import BVHTree
 
 # Blender can reload the add-on package during an update while leaving its
@@ -24,6 +25,18 @@ overlay = import_module(".overlay", __name__)
 
 def selected_meshes(context):
     return [obj for obj in context.selected_objects if obj.type == "MESH"]
+
+
+def analysis_meshes(context):
+    if context.scene.mesh_distance_all_visible:
+        return [obj for obj in context.visible_objects if obj.type == "MESH"]
+    return selected_meshes(context)
+
+
+def analysis_surfaces(context, objects):
+    depsgraph = context.evaluated_depsgraph_get()
+    surfaces = [(obj, evaluated_surface(obj, depsgraph)) for obj in objects]
+    return [(obj, surface) for obj, surface in surfaces if surface[1]]
 
 
 def evaluated_surface(obj, depsgraph):
@@ -65,23 +78,22 @@ def format_distance(scene, distance):
 class MESH_OT_check_surface_distance(bpy.types.Operator):
     bl_idname = "mesh.check_surface_distance"
     bl_label = "Misura distanza minima"
-    bl_description = "Mostra il segmento più corto tra le due superfici selezionate"
+    bl_description = "Mostra il segmento più corto tra tutte le mesh incluse nell’analisi"
 
     distance: bpy.props.FloatProperty(options={"HIDDEN", "SKIP_SAVE"})
     unit_label: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
     @classmethod
     def poll(cls, context):
-        return context.mode == "OBJECT" and len(selected_meshes(context)) == 2
+        return context.mode == "OBJECT" and len(analysis_meshes(context)) >= 2
 
     def execute(self, context):
-        depsgraph = context.evaluated_depsgraph_get()
-        surfaces = [evaluated_triangles(obj, depsgraph) for obj in selected_meshes(context)]
-        if any(not surface for surface in surfaces):
-            self.report({"ERROR"}, "Entrambe le mesh devono avere almeno una faccia.")
+        surfaces = analysis_surfaces(context, analysis_meshes(context))
+        if len(surfaces) < 2:
+            self.report({"ERROR"}, "Servono almeno due mesh con facce.")
             return {"CANCELLED"}
 
-        start, end = geometry.closest_surfaces(*surfaces)
+        start, end = geometry.closest_components(triangles(surface) for _, surface in surfaces)
         self.distance = (end - start).length
         self.unit_label = format_distance(context.scene, self.distance)
         label = f"Minimo: {self.unit_label}"
@@ -96,43 +108,34 @@ class MESH_OT_check_surface_distance(bpy.types.Operator):
 class MESH_OT_distance_heatmap(bpy.types.Operator):
     bl_idname = "mesh.distance_heatmap"
     bl_label = "Mostra heatmap"
-    bl_description = "Colora la mesh attiva in base alla distanza dalla seconda mesh"
+    bl_description = "Mostra su ogni mesh la distanza dal componente più vicino"
 
     @classmethod
     def poll(cls, context):
-        return (
-            MESH_OT_check_surface_distance.poll(context)
-            and context.active_object in selected_meshes(context)
-        )
+        return MESH_OT_check_surface_distance.poll(context)
 
     def execute(self, context):
-        source = context.active_object
-        target = next(obj for obj in selected_meshes(context) if obj != source)
-        depsgraph = context.evaluated_depsgraph_get()
-        points, faces = evaluated_surface(source, depsgraph)
-        target_surface = evaluated_surface(target, depsgraph)
-        if not faces or not target_surface[1]:
-            self.report({"ERROR"}, "Entrambe le mesh devono avere almeno una faccia.")
+        surfaces = [surface for _, surface in analysis_surfaces(context, analysis_meshes(context))]
+        if len(surfaces) < 2:
+            self.report({"ERROR"}, "Servono almeno due mesh con facce.")
             return {"CANCELLED"}
 
-        # Skip loose vertices so they cannot alter the heatmap range.
-        used = sorted({index for face in faces for index in face})
-        indices = {old: new for new, old in enumerate(used)}
-        points = [points[index] for index in used]
-        faces = [tuple(indices[index] for index in face) for face in faces]
-
-        tree = surface_bvh(target_surface)
-        distances = [tree.find_nearest(point)[3] for point in points]
-        if any(distance is None for distance in distances):
-            self.report({"ERROR"}, "La mesh di destinazione non ha una superficie misurabile.")
-            return {"CANCELLED"}
-
-        low, high = min(distances), max(distances)
-        labels = tuple(
-            format_distance(context.scene, value) for value in (low, (low + high) / 2, high)
+        trees = [(index, surface_bvh(surface)) for index, surface in enumerate(surfaces)]
+        scene = context.scene
+        points, faces, distances, spacing = geometry.sample_surfaces(
+            surfaces, trees, scene.mesh_distance_resolution
         )
-        data = overlay.scene_results(context.scene)
-        data.heatmap = overlay.Heatmap(points, faces, distances, target.name, labels, low == high)
+        sampled_low, sampled_high = min(distances), max(distances)
+        if scene.mesh_distance_scale_max > 0:
+            low, high = 0.0, scene.mesh_distance_scale_max
+        else:
+            low, high = sampled_low, sampled_high
+        labels = tuple(format_distance(scene, value) for value in (low, (low + high) / 2, high))
+        data = overlay.scene_results(scene)
+        data.heatmap = overlay.Heatmap(
+            points, faces, distances, (low, high), labels, len(surfaces),
+            format_distance(scene, spacing),
+        )
         data.batch = None
         data.legend_batch = None
         overlay.redraw()
@@ -177,26 +180,104 @@ class MESH_OT_distance_probe(bpy.types.Operator):
                 obj for obj in context.visible_objects if obj.type == "MESH" and obj != source
             ]
 
-        depsgraph = context.evaluated_depsgraph_get()
-        nearest = None
-        best_distance = float("inf")
-        for obj in candidates:
-            surface = evaluated_surface(obj, depsgraph)
-            if not surface[1]:
-                continue
-            point, _, _, distance = surface_bvh(surface).find_nearest(start)
-            if distance is not None and distance < best_distance:
-                nearest, best_distance, target = point, distance, obj
-
-        if nearest is None:
+        if not add_probe(context, source, start, analysis_surfaces(context, candidates)):
             self.report({"ERROR"}, "Nessuna superficie di destinazione disponibile.")
             return {"CANCELLED"}
-        label = f"Sonda → {target.name}: {format_distance(context.scene, best_distance)}"
-        overlay.scene_results(context.scene).probe = overlay.Measurement(
-            start, nearest, label, overlay.PROBE
+        return {"FINISHED"}
+
+
+def add_probe(context, source, start, surfaces):
+    trees = [(obj, surface_bvh(surface)) for obj, surface in surfaces if obj != source]
+    hit = geometry.nearest_component(start, trees)
+    if hit is None:
+        return False
+    target, point, distance = hit
+    label = f"{source.name} → {target.name}: {format_distance(context.scene, distance)}"
+    overlay.scene_results(context.scene).probes.append(
+        overlay.Measurement(start, point, label, overlay.PROBE)
+    )
+    overlay.redraw()
+    return True
+
+
+class MESH_OT_click_distance_probe(bpy.types.Operator):
+    bl_idname = "mesh.click_distance_probe"
+    bl_label = "Sonda (clic per misurare)"
+    bl_description = "Clicca su una superficie per misurare verso la mesh analizzata più vicina"
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.area is not None
+            and context.area.type == "VIEW_3D"
+            and MESH_OT_check_surface_distance.poll(context)
         )
+
+    def invoke(self, context, event):
+        surfaces = analysis_surfaces(context, analysis_meshes(context))
+        if len(surfaces) < 2:
+            self.report({"ERROR"}, "Servono almeno due mesh con facce.")
+            return {"CANCELLED"}
+        self.objects = [obj.name for obj, _ in surfaces]
+        self.area = context.area
+        self.window = context.window
+        self.area.header_text_set("Sonda distanza · Clic sinistro: misura · Esc / tasto destro: termina")
+        self.window.cursor_modal_set("CROSSHAIR")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def cancel(self, context):
+        if context.screen and any(area == self.area for area in context.screen.areas):
+            self.area.header_text_set(None)
+        self.window.cursor_modal_restore()
+
+    def modal(self, context, event):
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            self.cancel(context)
+            return {"FINISHED"}
+        if context.area != self.area or event.type != "LEFTMOUSE" or event.value != "PRESS":
+            return {"PASS_THROUGH"}
+
+        under_mouse = [
+            region for region in self.area.regions
+            if region.x <= event.mouse_x < region.x + region.width
+            and region.y <= event.mouse_y < region.y + region.height
+        ]
+        region = next((region for region in under_mouse if region.type == "WINDOW"), None)
+        if region is None or any(panel.type in {"UI", "TOOLS"} for panel in under_mouse):
+            return {"PASS_THROUGH"}
+
+        x, y = event.mouse_x - region.x, event.mouse_y - region.y
+        with context.temp_override(region=region):
+            view = context.region_data
+        if view is None:
+            return {"PASS_THROUGH"}
+        direction = region_2d_to_vector_3d(region, view, (x, y))
+        origin = region_2d_to_origin_3d(region, view, (x, y))
+        if not self.measure_ray(context, origin, direction):
+            self.report({"INFO"}, "Clicca su una delle mesh incluse nell’analisi.")
+        return {"RUNNING_MODAL"}
+
+    def measure_ray(self, context, origin, direction):
+        objects = [obj for obj in context.visible_objects if obj.name in self.objects]
+        # Scene ray cast respects the first object under the cursor, including occluders.
+        hit, start, _, _, source, _ = context.scene.ray_cast(
+            context.evaluated_depsgraph_get(), origin, direction
+        )
+        if not hit or source is None or source.original not in objects:
+            return False
+        source = source.original
+        targets = analysis_surfaces(context, (obj for obj in objects if obj != source))
+        return add_probe(context, source, start, targets)
+
+
+class MESH_OT_clear_distance_probes(bpy.types.Operator):
+    bl_idname = "mesh.clear_distance_probes"
+    bl_label = "Cancella sonde"
+
+    def execute(self, context):
+        overlay.scene_results(context.scene).probes.clear()
         overlay.redraw()
-        self.report({"INFO"}, label)
         return {"FINISHED"}
 
 
@@ -222,16 +303,26 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
             layout.prop(context.scene, "mesh_distance_probe_target", text="Destinazione")
             layout.operator(MESH_OT_distance_probe.bl_idname)
         else:
+            layout.prop(context.scene, "mesh_distance_all_visible")
             if not MESH_OT_check_surface_distance.poll(context):
-                layout.label(text="Seleziona due mesh in modalità Oggetto.")
+                layout.label(text="Includi almeno due mesh in modalità Oggetto.")
             layout.operator(MESH_OT_check_surface_distance.bl_idname)
-            layout.operator(MESH_OT_distance_heatmap.bl_idname)
+            layout.operator(MESH_OT_click_distance_probe.bl_idname, icon="EYEDROPPER")
+            heatmap = layout.column(align=True)
+            heatmap.prop(context.scene, "mesh_distance_resolution")
+            heatmap.prop(context.scene, "mesh_distance_scale_max")
+            heatmap.operator(MESH_OT_distance_heatmap.bl_idname)
 
         data = overlay.results.get(context.scene.as_pointer())
         if data is not None:
-            for measurement in (data.minimum, data.probe):
-                if measurement is not None:
-                    layout.label(text=measurement.label)
+            if data.minimum is not None:
+                layout.label(text=data.minimum.label)
+            if data.heatmap is not None:
+                layout.label(text=f"Passo stimato: {data.heatmap.spacing}")
+            if data.probes:
+                layout.label(text=f"Sonde: {len(data.probes)}")
+                layout.label(text=data.probes[-1].label)
+                layout.operator(MESH_OT_clear_distance_probes.bl_idname)
             layout.operator(MESH_OT_clear_distance_overlay.bl_idname)
 
 
@@ -239,6 +330,8 @@ classes = (
     MESH_OT_check_surface_distance,
     MESH_OT_distance_heatmap,
     MESH_OT_distance_probe,
+    MESH_OT_click_distance_probe,
+    MESH_OT_clear_distance_probes,
     MESH_OT_clear_distance_overlay,
     VIEW3D_PT_surface_distance,
 )
@@ -253,11 +346,28 @@ def register():
         type=bpy.types.Object,
         poll=mesh_only,
     )
+    bpy.types.Scene.mesh_distance_all_visible = bpy.props.BoolProperty(
+        name="Tutte le mesh visibili",
+        description="Analizza tutte le mesh visibili invece delle sole mesh selezionate",
+    )
+    bpy.types.Scene.mesh_distance_resolution = bpy.props.IntProperty(
+        name="Risoluzione",
+        description="Aumenta i campioni sulle facce lunghe (fino al limite di campionamento)",
+        default=32, min=4, max=96,
+    )
+    bpy.types.Scene.mesh_distance_scale_max = bpy.props.FloatProperty(
+        name="Fine scala",
+        description="Distanza corrispondente al blu. Zero usa il range comune misurato",
+        default=0, min=0, subtype="DISTANCE", unit="LENGTH", precision=4,
+    )
     overlay.register()
 
 
 def unregister():
     overlay.unregister()
+    del bpy.types.Scene.mesh_distance_scale_max
+    del bpy.types.Scene.mesh_distance_resolution
+    del bpy.types.Scene.mesh_distance_all_visible
     del bpy.types.Scene.mesh_distance_probe_target
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

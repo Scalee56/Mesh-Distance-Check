@@ -1,5 +1,8 @@
 """Distanza minima tra superfici triangolate, in coordinate globali."""
 
+from itertools import combinations
+from math import ceil
+
 from mathutils.geometry import (
     closest_point_on_tri,
     intersect_line_line,
@@ -105,9 +108,16 @@ def bounds_distance_squared(a, b):
 
 
 def closest_surfaces(first, second):
+    return closest_components((first, second))
+
+
+def closest_components(surfaces):
     closest = None
     best = float("inf")
-    pending = [(Node(list(first)), Node(list(second)))]
+    roots = [Node(list(surface)) for surface in surfaces]
+    pending = sorted(
+        combinations(roots, 2), key=lambda pair: bounds_distance_squared(*pair), reverse=True
+    )
     while pending:
         a, b = pending.pop()
         if bounds_distance_squared(a, b) >= best:
@@ -132,3 +142,73 @@ def closest_surfaces(first, second):
 
 def surface_distance(first, second):
     return distance_squared(closest_surfaces(first, second)) ** 0.5
+
+def nearest_component(point, trees):
+    best_distance = float("inf")
+    nearest = None
+    for component, tree in trees:
+        hit, _, _, distance = tree.find_nearest(point, best_distance)
+        if distance is not None and distance < best_distance:
+            best_distance = distance
+            nearest = component, hit, distance
+            if distance == 0:
+                break
+    return nearest
+
+
+def sample_surfaces(surfaces, trees, resolution):
+    """Subdivide long triangles for display only, with a shared spacing and budget."""
+    all_triangles = []
+    for points, faces in surfaces:
+        triangles = []
+        for i, j, k in faces:
+            a, b, c = points[i], points[j], points[k]
+            length = max((b - a).length, (c - a).length, (c - b).length)
+            triangles.append((a, b, c, length))
+        all_triangles.append(triangles)
+    lengths = [length for triangles in all_triangles for _, _, _, length in triangles]
+    longest = max(lengths)
+    spacing = longest / resolution
+
+    def divisions(length):
+        return max(1, ceil(length / spacing)) if spacing else 1
+
+    budget = max(300_000, len(lengths))
+    while sum(divisions(length) ** 2 for length in lengths) > budget:
+        spacing *= 1.4
+
+    points, faces, distances = [], [], []
+    for component, triangles in enumerate(all_triangles):
+        vertex_cache = {}
+        targets = [(index, tree) for index, tree in trees if component != index]
+
+        def sample(point):
+            key = tuple(point)
+            index = vertex_cache.get(key)
+            if index is None:
+                _, _, distance = nearest_component(point, targets)
+                index = vertex_cache[key] = len(points)
+                points.append(point)
+                distances.append(distance)
+            return index
+
+        for a, b, c, length in triangles:
+            count = divisions(length)
+            if count == 1:
+                faces.append((sample(a), sample(b), sample(c)))
+                continue
+
+            # A triangular lattice includes both edge and interior samples.
+            ab, ac = b - a, c - a
+            rows = [
+                [sample(a + ab * (i / count) + ac * (j / count))
+                 for j in range(count - i + 1)]
+                for i in range(count + 1)
+            ]
+            for i in range(count):
+                row, next_row = rows[i], rows[i + 1]
+                for j in range(count - i):
+                    faces.append((row[j], next_row[j], row[j + 1]))
+                    if j + 1 < len(next_row):
+                        faces.append((row[j + 1], next_row[j], next_row[j + 1]))
+    return points, faces, distances, spacing
