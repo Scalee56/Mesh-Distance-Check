@@ -367,19 +367,27 @@ def adjust(components, target, minimum, resolution):
     current = yield from violation(components, target)
     moved = any(component.points != component.original_points for component in components)
     if current is None and not moved:
-        return False, []
+        return False, [], []
 
+    issues = []
     for _ in range(12):
         if current is None:
             break
-        changes = yield from proposal(components, current, goal)
-        if changes is None:
-            raise CorrectionError("Le mesh si toccano o si intersecano. Separale leggermente prima di correggerle.")
+        try:
+            changes = yield from proposal(components, current, goal)
+            if changes is None:
+                raise CorrectionError("Le mesh si toccano o si intersecano.")
+        except CorrectionError as error:
+            if not any(component.points != component.original_points for component in components):
+                raise
+            issues.append(str(error))
+            break
         for component, deltas in zip(components, changes):
             yield from apply_changes(component, deltas)
         current = yield from violation(components, target)
-    if current is not None:
-        raise CorrectionError("La soglia non è raggiungibile con questa correzione locale.")
+
+    if not any(component.points != component.original_points for component in components):
+        raise CorrectionError("La correzione non ha prodotto spostamenti.")
 
     yield "Controllo dello spessore e della distanza finale"
     warnings = []
@@ -395,15 +403,18 @@ def adjust(components, target, minimum, resolution):
         component.faces = [tuple(face.vertices) for face in component.mesh.loop_triangles]
         affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
         if affected:
-            check_surface(component, affected)
+            try:
+                check_surface(component, affected)
+            except CorrectionError as error:
+                issues.append(str(error))
             try:
                 yield from check_thickness(component, minimum, affected, resolution)
             except ThicknessWarning as warning:
                 warnings.append(str(warning))
 
     if (yield from violation(components, target)) is not None:
-        raise CorrectionError("La geometria finale non rispetta la distanza richiesta.")
-    return True, warnings
+        issues.append("Distanza finale sotto la soglia richiesta.")
+    return True, warnings, issues
 
 
 class CorrectionJob:
@@ -445,12 +456,13 @@ def create_corrected_copies(context, objects, target, minimum, resolution):
                 components.append(Component(obj, mesh, evaluated.matrix_world))
             except ValueError as error:
                 raise CorrectionError(f"{obj.name}: la trasformazione della mesh è singolare.") from error
-        changed, warnings = yield from adjust(components, target, minimum, resolution)
+        changed, warnings, issues = yield from adjust(components, target, minimum, resolution)
         if not changed:
-            return [], []
+            return [], [], []
+        suffix = "Correzione parziale" if issues else "Distanza"
         for component in components:
             component.mesh.update()
-            copy = bpy.data.objects.new(f"{component.obj.name} · Distanza", component.mesh)
+            copy = bpy.data.objects.new(f"{component.obj.name} · {suffix}", component.mesh)
             copies.append(copy)
             context.scene.collection.objects.link(copy)
             copy.matrix_world = component.matrix
@@ -463,7 +475,7 @@ def create_corrected_copies(context, objects, target, minimum, resolution):
             if obj == active:
                 context.view_layer.objects.active = copy
         complete = True
-        return copies, warnings
+        return copies, warnings, issues
     finally:
         if not complete:
             for copy in copies:

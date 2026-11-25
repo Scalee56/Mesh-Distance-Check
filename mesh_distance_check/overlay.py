@@ -47,6 +47,7 @@ class Results:
         self.minimum = None
         self.probes = []
         self.correction_warnings = []
+        self.correction_issues = []
         self.heatmap = None
         self.batch = None
         self.legend_batch = None

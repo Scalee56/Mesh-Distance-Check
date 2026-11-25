@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 4, 6),
+    "version": (0, 4, 7),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -369,15 +369,18 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
         return self.finish(context, result)
 
     def finish(self, context, result):
-        copies, warnings = result
+        copies, warnings, issues = result
         scene = context.scene
         if not copies:
             self.report({"INFO"}, "Le mesh rispettano già la distanza minima.")
             return {"FINISHED"}
         overlay.results.pop(scene.as_pointer(), None)
-        if warnings:
-            overlay.scene_results(scene).correction_warnings = warnings
-            self.report({"WARNING"}, "Copie corrette. " + " | ".join(warnings))
+        if warnings or issues:
+            data = overlay.scene_results(scene)
+            data.correction_warnings = warnings
+            data.correction_issues = issues
+            status = "Correzione parziale visibile." if issues else "Copie corrette."
+            self.report({"WARNING"}, status + " " + " | ".join(issues + warnings))
         else:
             self.report({"INFO"}, f"Correzione verificata su {len(copies)} copie. Originali nascosti.")
         overlay.redraw()
@@ -420,6 +423,11 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
                 layout.label(text=f"Sonde: {len(data.probes)}")
                 layout.label(text=data.probes[-1].label)
                 layout.operator(MESH_OT_clear_distance_probes.bl_idname)
+            if data.correction_issues:
+                partial = layout.box()
+                partial.label(text="Correzione parziale", icon="ERROR")
+                for message in data.correction_issues:
+                    partial.label(text=message)
             if data.correction_warnings:
                 warnings = layout.box()
                 warnings.label(text="Avvisi spessore", icon="ERROR")
