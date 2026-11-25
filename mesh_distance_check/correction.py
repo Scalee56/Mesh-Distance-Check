@@ -66,6 +66,41 @@ def face_samples(a, b, c, divisions):
             yield a + ab * ((row + 1 / 3) / divisions) + ac * ((col + 1 / 3) / divisions)
 
 
+def oblique_rays(normal):
+    tangent = normal.orthogonal().normalized()
+    bitangent = normal.cross(tangent)
+    lateral = (tangent, -tangent, bitangent, -bitangent,
+               tangent + bitangent, tangent - bitangent,
+               -tangent + bitangent, -tangent - bitangent)
+    for side in (-normal, normal):
+        for axis in lateral:
+            yield (side + axis.normalized() * 0.65).normalized()
+
+
+def opposite_wall(tree, point, normal, offset, limit, faces, face_normals, vertices, closed):
+    directions = (-normal,) if closed else (-normal, normal)
+    for direction in directions:
+        _, _, hit, distance = tree.ray_cast(point + direction * offset, direction, limit)
+        if (hit is not None and direction.dot(face_normals[hit]) > 0.15
+                and vertices.isdisjoint(faces[hit])):
+            return distance + offset
+
+    if not closed:
+        thickness = None
+        for direction in oblique_rays(normal):
+            _, _, hit, distance = tree.ray_cast(point + direction * offset, direction, limit)
+            if (hit is None or direction.dot(face_normals[hit]) <= 0.15
+                    or abs(normal.dot(face_normals[hit])) < 0.65
+                    or not vertices.isdisjoint(faces[hit])):
+                continue
+            # The oblique path is longer than the gap measured along the source normal.
+            gap = (distance + offset) * abs(direction.dot(normal))
+            if thickness is None or gap < thickness:
+                thickness = gap
+        return thickness
+    return None
+
+
 def check_thickness(component, minimum, affected, resolution):
     triangles = component.triangles()
     face_normals = normals_for(component.points, component.faces)
@@ -90,17 +125,13 @@ def check_thickness(component, minimum, affected, resolution):
         samples = max(1, ceil(lengths[index] / spacing)) if spacing else 1
         for point in face_samples(a, b, c, samples):
             yield
-            directions = (-normal,) if closed else (-normal, normal)
-            opposite = False
-            for direction in directions:
-                _, _, hit, distance = tree.ray_cast(point + direction * offset, direction, ray_limit)
-                if (hit is not None and direction.dot(face_normals[hit]) > 0.15
-                        and face_vertices.isdisjoint(component.faces[hit])):
-                    opposite = True
-                    break
-            if opposite and distance + offset < minimum:
+            thickness = opposite_wall(
+                tree, point, normal, offset, ray_limit, component.faces,
+                face_normals, face_vertices, closed,
+            )
+            if thickness is not None and thickness < minimum:
                 raise CorrectionError(f"{component.obj.name}: spessore sotto 1 mm lungo una parete.")
-            if not closed and not opposite:
+            if not closed and thickness is None:
                 raise CorrectionError(
                     f"{component.obj.name}: parete opposta assente o non verificabile nella zona deformata."
                 )
