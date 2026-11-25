@@ -30,7 +30,7 @@ Le sovrapposizioni sono istantanee della geometria al momento della misura. Rica
 
 ## Correzione della distanza minima
 
-In modalità Oggetto seleziona almeno due mesh, imposta **Distanza minima (mm)** (predefinita a **0,30 mm**) e premi **Correggi distanza minima**. La correzione usa i punti effettivamente sotto soglia, anche se cadono all’interno di una faccia, e distribuisce lo spostamento sui due lati. Durante il calcolo puoi premere **Esc**. Se il lavoro supera 20 secondi, l’operazione si interrompe e scarta i dati provvisori. Usa la geometria risultante dai modificatori e la scala unità della scena per convertire i millimetri.
+In modalità Oggetto seleziona almeno due mesh, imposta **Distanza minima (mm)** (predefinita a **0,30 mm**) e premi **Correggi distanza minima**. Sulle mesh dense, la correzione calcola un primo spostamento su una geometria molto semplificata. Poi trasferisce lo spostamento alle copie con la topologia originale e rifinisce le zone ancora sotto soglia. La barra di stato indica la fase corrente. Premi **Esc** per interrompere e scartare i dati provvisori. Usa la geometria risultante dai modificatori e la scala unità della scena per convertire i millimetri.
 
 Per vedere quali zone richiedono una correzione, imposta **Fine scala** allo stesso valore di **Distanza minima (mm)** e ricalcola la heatmap. Con la scala automatica il rosso può indicare la distanza più piccola della selezione anche se è già sopra soglia.
 
@@ -38,7 +38,7 @@ Se la verifica riesce, troverai selezionate le copie con suffisso **Distanza**. 
 
 Il controllo di **1 mm** riguarda le facce deformate e le relative pareti opposte. Fori o difetti lontani dalla correzione sono ammessi. Se la mesh è aperta o non manifold, ogni sonda di controllo sulla zona deformata deve trovare una parete opposta misurabile. Una superficie singola senza spessore viene quindi rifiutata quando la correzione dovrebbe deformarla.
 
-Il controllo combina la distanza fra facce contrapposte con sonde campionate. Può respingere alcuni dettagli acuti e non sostituisce una verifica dello spessore per la produzione. Se rileva spessore insufficiente o non verificabile, una nuova intersezione nella zona modificata o distanza finale insufficiente, mostra un avviso e scarta le copie. Le mesh già a contatto o intersecate devono essere leggermente separate prima della correzione.
+La verifica finale controlla la distanza minima sulla geometria completa. **Risoluzione** regola anche l’intensità del campionamento dello spessore sulle facce modificate, oltre alla heatmap. Il controllo combina la distanza fra facce contrapposte con sonde campionate. Può respingere alcuni dettagli acuti e non sostituisce una verifica dello spessore per la produzione. Se rileva spessore insufficiente o non verificabile, una nuova intersezione nella zona modificata o distanza finale insufficiente, mostra un avviso e scarta le copie. Le mesh già a contatto o intersecate devono essere leggermente separate prima della correzione.
 
 
 ## Prova rapida

@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 4, 2),
+    "version": (0, 4, 3),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -315,7 +315,7 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
         millimeter = 0.001 / scene.unit_settings.scale_length
         self.job = correction.CorrectionJob(
             context, selected_meshes(context),
-            scene.mesh_distance_clearance_mm * millimeter, millimeter,
+            scene.mesh_distance_clearance_mm * millimeter, millimeter, scene.mesh_distance_resolution,
         )
 
     def invoke(self, context, event):
@@ -324,7 +324,8 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
         self.start(context)
         self.timer = context.window_manager.event_timer_add(0.04, window=context.window)
         self.workspace = context.workspace
-        self.workspace.status_text_set("Correzione distanza minima in corso · Esc per annullare")
+        self.phase = self.job.phase
+        self.workspace.status_text_set(f"{self.phase} · Esc per annullare")
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
@@ -349,6 +350,9 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
             self.cancel(context)
             raise
         if copies is None:
+            if self.phase != self.job.phase:
+                self.phase = self.job.phase
+                self.workspace.status_text_set(f"{self.phase} · Esc per annullare")
             return {"RUNNING_MODAL"}
         self.cancel(context)
         return self.finish(context, copies)
@@ -356,7 +360,7 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
     def execute(self, context):
         self.start(context)
         try:
-            copies = self.job.advance(60)
+            copies = self.job.advance(float("inf"))
         except correction.CorrectionError as error:
             self.report({"WARNING"}, str(error))
             return {"CANCELLED"}
@@ -441,7 +445,7 @@ def register():
     )
     bpy.types.Scene.mesh_distance_resolution = bpy.props.IntProperty(
         name="Risoluzione",
-        description="Aumenta i campioni sulle facce lunghe (fino al limite di campionamento)",
+        description="Densità della heatmap e della verifica dello spessore dopo la correzione",
         default=32, min=4, max=96,
     )
     bpy.types.Scene.mesh_distance_scale_max = bpy.props.FloatProperty(
