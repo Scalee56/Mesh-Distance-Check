@@ -16,8 +16,6 @@ def normals_for(points, faces):
     normals = []
     for i, j, k in faces:
         normal = (points[j] - points[i]).cross(points[k] - points[i])
-        if normal.length_squared == 0:
-            raise CorrectionError("La geometria contiene facce degeneri.")
         normals.append(normal.normalized())
     return normals
 
@@ -32,6 +30,7 @@ class Component:
         if matrix != self.matrix:
             mesh.transform(self.inverse @ matrix)
         self.points = [self.matrix @ vert.co for vert in mesh.vertices]
+        self.original_points = list(self.points)
         mesh.calc_loop_triangles()
         self.faces = [tuple(face.vertices) for face in mesh.loop_triangles]
         self.normals = normals_for(self.points, self.faces)
@@ -43,46 +42,45 @@ class Component:
         return BVHTree.FromPolygons(self.points, self.faces, all_triangles=True)
 
 
-def validate_closed(component):
+def is_closed(component):
     mesh = bmesh.new()
     try:
         mesh.from_mesh(component.mesh)
-        if (not component.faces
-                or any(not edge.is_manifold or not edge.is_contiguous for edge in mesh.edges)
-                or any(not vert.is_manifold for vert in mesh.verts)):
-            raise CorrectionError(f"{component.obj.name}: serve una mesh chiusa e manifold.")
+        return (all(edge.is_manifold and edge.is_contiguous for edge in mesh.edges)
+                and all(vert.is_manifold for vert in mesh.verts))
     finally:
         mesh.free()
 
 
-def check_thickness(component, minimum):
+def check_thickness(component, minimum, affected):
     triangles = component.triangles()
     face_normals = normals_for(component.points, component.faces)
     normals = {id(triangle): normal for triangle, normal in zip(triangles, face_normals)}
     tree = component.tree()
     offset = minimum * 0.0001
-    for triangle, normal in zip(triangles, face_normals):
-        a, b, c = triangle
+    closed = is_closed(component)
+    ray_limit = minimum - offset if closed else float("inf")
+    for index in affected:
+        a, b, c = triangles[index]
+        normal = face_normals[index]
         # Sample inside each face as an additional guard on slanted walls.
         for point in ((a + b + c) / 3, (a * 4 + b + c) / 6,
                       (a + b * 4 + c) / 6, (a + b + c * 4) / 6):
-            _, _, hit, distance = tree.ray_cast(point - normal * offset, -normal, minimum - offset)
-            if hit is not None and normal.dot(face_normals[hit]) < -0.15:
-                if distance + offset < minimum:
-                    raise CorrectionError(
-                        f"{component.obj.name}: spessore sotto 1 mm lungo una parete."
-                    )
-    root = geometry.Node(triangles)
-    pending = [(root, root)]
+            _, _, hit, distance = tree.ray_cast(point - normal * offset, -normal, ray_limit)
+            opposite = hit is not None and normal.dot(face_normals[hit]) < -0.15
+            if opposite and distance + offset < minimum:
+                raise CorrectionError(f"{component.obj.name}: spessore sotto 1 mm lungo una parete.")
+            if not closed and not opposite:
+                raise CorrectionError(
+                    f"{component.obj.name}: parete opposta assente o non verificabile nella zona deformata."
+                )
+    pending = [(geometry.Node([triangles[i] for i in affected]), geometry.Node(triangles))]
     squared = minimum ** 2
     while pending:
         a, b = pending.pop()
         if geometry.bounds_distance_squared(a, b) >= squared:
             continue
-        if a is b and a.count > 4:
-            left, right = a.split()
-            pending.extend(((left, left), (left, right), (right, right)))
-        elif a.count > 4 and a.count >= b.count:
+        if a.count > 4 and a.count >= b.count:
             pending.extend((child, b) for child in a.split())
         elif b.count > 4:
             pending.extend((a, child) for child in b.split())
@@ -98,14 +96,18 @@ def check_thickness(component, minimum):
                         )
 
 
-def check_surface(component):
+def check_surface(component, affected, check_orientation=True):
     normals = normals_for(component.points, component.faces)
-    if any(old.dot(new) <= 0 for old, new in zip(component.normals, normals)):
+    if any(normals[i].length_squared == 0 for i in affected):
+        raise CorrectionError(f"{component.obj.name}: facce degeneri nella zona deformata.")
+    if check_orientation and any(component.normals[i].dot(normals[i]) <= 0 for i in affected):
         raise CorrectionError(f"{component.obj.name}: la correzione ribalta una faccia.")
-    tree = component.tree()
-    faces = [set(face) for face in component.faces]
-    if any(a < b and faces[a].isdisjoint(faces[b]) for a, b in tree.overlap(tree)):
-        raise CorrectionError(f"{component.obj.name}: la mesh si interseca con sé stessa.")
+
+    changed = [component.faces[i] for i in affected]
+    changed_tree = BVHTree.FromPolygons(component.points, changed, all_triangles=True)
+    for a, b in changed_tree.overlap(component.tree()):
+        if set(changed[a]).isdisjoint(component.faces[b]):
+            raise CorrectionError(f"{component.obj.name}: la zona deformata si interseca con la mesh.")
 
 
 def clearance(components):
@@ -151,11 +153,6 @@ def adjust(components, target, minimum):
     if distance <= 0:
         raise CorrectionError("Le mesh si toccano o si intersecano. Separale leggermente prima di correggerle.")
 
-    for component in components:
-        validate_closed(component)
-        check_surface(component)
-        check_thickness(component, minimum)
-
     goal = target + minimum * 0.002
     for _ in range(10):
         trees = [component.tree() for component in components]
@@ -166,18 +163,25 @@ def adjust(components, target, minimum):
         for component, deltas in zip(components, changes):
             # Round-trip through local coordinates before validating the output.
             for vertex, point, delta in zip(component.mesh.vertices, component.points, deltas):
-                vertex.co = component.inverse @ (point + delta)
+                if delta.length_squared:
+                    vertex.co = component.inverse @ (point + delta)
             component.points = [component.matrix @ vertex.co for vertex in component.mesh.vertices]
         distance = clearance(components)
         if distance >= target:
             for component in components:
-                check_surface(component)
+                moved = {i for i, (old, new) in enumerate(
+                    zip(component.original_points, component.points)
+                ) if old != new}
+                affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
+                if not affected:
+                    continue
+                check_surface(component, affected)
                 component.mesh.update()
                 component.mesh.calc_loop_triangles()
                 component.faces = [tuple(face.vertices) for face in component.mesh.loop_triangles]
-                component.normals = normals_for(component.points, component.faces)
-                check_surface(component)
-                check_thickness(component, minimum)
+                affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
+                check_surface(component, affected, check_orientation=False)
+                check_thickness(component, minimum, affected)
             if clearance(components) < target:
                 raise CorrectionError("La geometria finale non rispetta la distanza richiesta.")
             return True

@@ -34,7 +34,10 @@ In modalità Oggetto seleziona almeno due mesh, imposta **Distanza minima (mm)**
 
 Se la verifica riesce, troverai selezionate le copie con suffisso **Distanza**. Includono i modificatori applicati alla geometria. Gli originali restano nella scena, nascosti nella vista corrente. Puoi mostrarli di nuovo dall'Outliner oppure annullare l'operazione con **Ctrl+Z**.
 
-Il controllo di **1 mm** combina la distanza geometrica fra facce contrapposte con sonde interne sulle facce. La verifica è conservativa e può respingere anche alcuni dettagli acuti o ravvicinati della stessa mesh. Non sostituisce una verifica dello spessore per la produzione. Se rileva una parete sotto soglia, una mesh aperta, un'intersezione o una distanza insufficiente dopo la correzione, mostra un avviso e scarta le copie. Le mesh già a contatto o intersecate devono essere leggermente separate prima di eseguire la correzione.
+Il controllo di **1 mm** riguarda le facce deformate e le relative pareti opposte. Fori o difetti lontani dalla correzione sono ammessi. Se la mesh è aperta o non manifold, ogni sonda di controllo sulla zona deformata deve trovare una parete opposta misurabile. Una superficie singola senza spessore viene quindi rifiutata quando la correzione dovrebbe deformarla.
+
+Il controllo combina la distanza fra facce contrapposte con sonde campionate. Può respingere alcuni dettagli acuti e non sostituisce una verifica dello spessore per la produzione. Se rileva spessore insufficiente o non verificabile, una nuova intersezione nella zona modificata o distanza finale insufficiente, mostra un avviso e scarta le copie. Le mesh già a contatto o intersecate devono essere leggermente separate prima della correzione.
+
 
 ## Prova rapida
 
