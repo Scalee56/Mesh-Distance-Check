@@ -117,8 +117,21 @@ def closest_surfaces(first, second):
 
 def closest_components(surfaces, tolerance=0.0):
     """Return a real surface pair, stopping once its error is bounded by tolerance."""
+    return finish_search(search_components(surfaces, tolerance=tolerance))
+
+
+def finish_search(search):
+    try:
+        while True:
+            next(search)
+    except StopIteration as stop:
+        return stop.value
+
+
+def search_components(surfaces, tolerance=0.0, cutoff=None):
+    """Yield between zones. With a cutoff, return the first violating faces and points."""
     closest = None
-    best, limit = inf, inf
+    best = limit = inf if cutoff is None else cutoff ** 2
     roots = [Node(list(surface)) for surface in surfaces]
     groups = ComponentZone([(root.low, root.high, index, root) for index, root in enumerate(roots)])
     order = count()
@@ -134,6 +147,7 @@ def closest_components(surfaces, tolerance=0.0):
 
     pending = [entry(groups, groups)]
     while pending:
+        yield
         bound, _, _, _, a, b = heappop(pending)
         if bound >= limit:
             break
@@ -156,6 +170,8 @@ def closest_components(surfaces, tolerance=0.0):
                     pair = closest_triangles(triangle_a, triangle_b)
                     squared = distance_squared(pair)
                     if squared < best:
+                        if cutoff is not None:
+                            return (triangle_a, triangle_b), pair
                         closest, best = pair, squared
                         limit = max(0.0, sqrt(best) - tolerance) ** 2
                         if bound >= limit:
@@ -171,8 +187,8 @@ def closest_components(surfaces, tolerance=0.0):
 def surface_distance(first, second):
     return distance_squared(closest_surfaces(first, second)) ** 0.5
 
-def nearest_component(point, trees):
-    best_distance = float("inf")
+def nearest_component(point, trees, limit=inf):
+    best_distance = limit
     nearest = None
     for component, tree in trees:
         hit, _, _, distance = tree.find_nearest(point, best_distance)

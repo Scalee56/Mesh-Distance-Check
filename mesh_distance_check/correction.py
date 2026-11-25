@@ -1,5 +1,7 @@
 """Deform evaluated copies and validate the candidate assembly before publishing it."""
 
+from time import monotonic
+
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
@@ -61,6 +63,7 @@ def check_thickness(component, minimum, affected):
     closed = is_closed(component)
     ray_limit = minimum - offset if closed else float("inf")
     for index in affected:
+        yield
         a, b, c = triangles[index]
         normal = face_normals[index]
         # Sample inside each face as an additional guard on slanted walls.
@@ -77,6 +80,7 @@ def check_thickness(component, minimum, affected):
     pending = [(geometry.Node([triangles[i] for i in affected]), geometry.Node(triangles))]
     squared = minimum ** 2
     while pending:
+        yield
         a, b = pending.pop()
         if geometry.bounds_distance_squared(a, b) >= squared:
             continue
@@ -110,85 +114,139 @@ def check_surface(component, affected, check_orientation=True):
             raise CorrectionError(f"{component.obj.name}: la zona deformata si interseca con la mesh.")
 
 
-def clearance(components):
-    pair = geometry.closest_components(component.triangles() for component in components)
-    return geometry.distance_squared(pair) ** 0.5
+def violation(components, target):
+    triangles = [component.triangles() for component in components]
+    result = yield from geometry.search_components(triangles, cutoff=target)
+    if result is None:
+        return None
+    faces, points = result
+    owners = {}
+    for component_index, (component, surface) in enumerate(zip(components, triangles)):
+        for index, triangle in enumerate(surface):
+            if triangle is faces[0] or triangle is faces[1]:
+                owners[id(triangle)] = component_index, component.faces[index]
+    return [owners[id(face)] for face in faces], points
+
+
+def keep_push(deltas, indices, delta):
+    for vertex in indices:
+        previous = deltas.get(vertex)
+        if previous is None or delta.length_squared > previous.length_squared:
+            deltas[vertex] = delta
 
 
 def displacements(component, index, trees, goal):
     targets = [tree for other, tree in enumerate(trees) if other != index]
-    deltas = [Vector((0, 0, 0)) for _ in component.points]
+    deltas, seen_vertices = {}, set()
 
     def push(point, indices):
-        best = goal
-        nearest = None
-        for tree in targets:
-            hit, _, _, distance = tree.find_nearest(point, best)
-            if distance is not None and distance < best:
-                nearest, best = hit, distance
-        if nearest is None:
+        match = geometry.nearest_component(point, enumerate(targets), goal)
+        if match is None or match[2] >= goal:
             return
-        if best == 0:
-            raise CorrectionError("Le superfici si toccano o si intersecano durante la correzione.")
-        delta = (point - nearest).normalized() * ((goal - best) * 0.55)
-        for vertex in indices:
-            if delta.length_squared > deltas[vertex].length_squared:
-                deltas[vertex] = delta
+        _, nearest, distance = match
+        if distance == 0:
+            raise CorrectionError("Le superfici si toccano durante la correzione.")
+        delta = (point - nearest).normalized() * ((goal - distance) * 0.55)
+        keep_push(deltas, indices, delta)
 
-    for vertex, point in enumerate(component.points):
-        push(point, (vertex,))
     for face in component.faces:
+        yield
         a, b, c = (component.points[vertex] for vertex in face)
-        push((a + b + c) / 3, face)
-        for midpoint, edge in (((a + b) * .5, face[:2]), ((b + c) * .5, face[1:]),
-                               ((c + a) * .5, (face[2], face[0]))):
-            push(midpoint, edge)
+        center = (a + b + c) / 3
+        radius = max((point - center).length for point in (a, b, c))
+        reach = (goal + radius) * 1.000001
+        if not any(tree.find_nearest(center, reach)[0] is not None for tree in targets):
+            continue
+        for vertex in face:
+            if vertex not in seen_vertices:
+                push(component.points[vertex], (vertex,))
+                seen_vertices.add(vertex)
+        push(center, face)
     return deltas
 
 
 def adjust(components, target, minimum):
-    distance = clearance(components)
-    if distance >= target:
+    current = yield from violation(components, target)
+    if current is None:
         return False
-    if distance <= 0:
-        raise CorrectionError("Le mesh si toccano o si intersecano. Separale leggermente prima di correggerle.")
 
     goal = target + minimum * 0.002
-    for _ in range(10):
-        trees = [component.tree() for component in components]
-        changes = [displacements(component, index, trees, goal)
-                   for index, component in enumerate(components)]
-        if not any(delta.length_squared for deltas in changes for delta in deltas):
-            break
-        for component, deltas in zip(components, changes):
-            # Round-trip through local coordinates before validating the output.
-            for vertex, point, delta in zip(component.mesh.vertices, component.points, deltas):
-                if delta.length_squared:
-                    vertex.co = component.inverse @ (point + delta)
-            component.points = [component.matrix @ vertex.co for vertex in component.mesh.vertices]
-        distance = clearance(components)
-        if distance >= target:
-            for component in components:
-                moved = {i for i, (old, new) in enumerate(
-                    zip(component.original_points, component.points)
-                ) if old != new}
-                affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
-                if not affected:
-                    continue
-                check_surface(component, affected)
-                component.mesh.update()
-                component.mesh.calc_loop_triangles()
-                component.faces = [tuple(face.vertices) for face in component.mesh.loop_triangles]
-                affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
-                check_surface(component, affected, check_orientation=False)
-                check_thickness(component, minimum, affected)
-            if clearance(components) < target:
-                raise CorrectionError("La geometria finale non rispetta la distanza richiesta.")
-            return True
-        if distance <= 0:
-            raise CorrectionError("La correzione ha generato un contatto o un’intersezione.")
+    for _ in range(12):
+        owners, (start, end) = current
+        direction = start - end
+        distance = direction.length
+        if distance == 0:
+            raise CorrectionError("Le mesh si toccano o si intersecano. Separale leggermente prima di correggerle.")
 
-    raise CorrectionError("La soglia di distanza non è raggiungibile con questa correzione locale.")
+        trees = []
+        for component in components:
+            yield
+            trees.append(component.tree())
+        changes = []
+        for index, component in enumerate(components):
+            changes.append((yield from displacements(component, index, trees, goal)))
+
+        # The exact violating points can lie between every vertex and centroid.
+        # Push both supporting faces even when the samples miss the narrow gap.
+        delta = direction.normalized() * ((goal - distance) * 0.55)
+        for (index, face), push in zip(owners, (delta, -delta)):
+            keep_push(changes[index], face, push)
+
+        for component, deltas in zip(components, changes):
+            for index, push in deltas.items():
+                yield
+                vertex = component.mesh.vertices[index]
+                vertex.co = component.inverse @ (component.points[index] + push)
+                component.points[index] = component.matrix @ vertex.co
+
+        current = yield from violation(components, target)
+        if current is None:
+            break
+    else:
+        raise CorrectionError("La soglia non è raggiungibile con questa correzione locale.")
+
+    for component in components:
+        yield
+        moved = {i for i, (old, new) in enumerate(
+            zip(component.original_points, component.points)
+        ) if old != new}
+        affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
+        if not affected:
+            continue
+        check_surface(component, affected)
+        yield
+        component.mesh.update()
+        component.mesh.calc_loop_triangles()
+        component.faces = [tuple(face.vertices) for face in component.mesh.loop_triangles]
+        affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
+        check_surface(component, affected, check_orientation=False)
+        yield from check_thickness(component, minimum, affected)
+
+    if (yield from violation(components, target)) is not None:
+        raise CorrectionError("La geometria finale non rispetta la distanza richiesta.")
+    return True
+
+
+class CorrectionJob:
+    def __init__(self, context, objects, target, minimum):
+        self.steps = create_corrected_copies(context, objects, target, minimum)
+        self.deadline = monotonic() + 20
+
+    def advance(self, seconds):
+        end = monotonic() + seconds
+        try:
+            while monotonic() < end:
+                if monotonic() >= self.deadline:
+                    raise CorrectionError(
+                        "Correzione interrotta dopo 20 secondi. Prova con meno componenti selezionati."
+                    )
+                next(self.steps)
+        except StopIteration as stop:
+            return stop.value
+        return None
+
+    def close(self):
+        self.steps.close()
 
 
 def create_corrected_copies(context, objects, target, minimum):
@@ -198,6 +256,7 @@ def create_corrected_copies(context, objects, target, minimum):
     try:
         components = []
         for obj in objects:
+            yield
             evaluated = obj.evaluated_get(depsgraph)
             mesh = bpy.data.meshes.new_from_object(
                 evaluated, preserve_all_data_layers=True, depsgraph=depsgraph
@@ -209,7 +268,7 @@ def create_corrected_copies(context, objects, target, minimum):
                 components.append(Component(obj, mesh, evaluated.matrix_world))
             except ValueError as error:
                 raise CorrectionError(f"{obj.name}: la trasformazione della mesh è singolare.") from error
-        if not adjust(components, target, minimum):
+        if not (yield from adjust(components, target, minimum)):
             return []
         for component in components:
             component.mesh.update()

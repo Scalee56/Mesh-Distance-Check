@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 4, 1),
+    "version": (0, 4, 2),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -310,17 +310,62 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
     def poll(cls, context):
         return context.mode == "OBJECT" and len(selected_meshes(context)) >= 2
 
-    def execute(self, context):
+    def start(self, context):
         scene = context.scene
         millimeter = 0.001 / scene.unit_settings.scale_length
+        self.job = correction.CorrectionJob(
+            context, selected_meshes(context),
+            scene.mesh_distance_clearance_mm * millimeter, millimeter,
+        )
+
+    def invoke(self, context, event):
+        if bpy.app.background or context.window is None:
+            return self.execute(context)
+        self.start(context)
+        self.timer = context.window_manager.event_timer_add(0.04, window=context.window)
+        self.workspace = context.workspace
+        self.workspace.status_text_set("Correzione distanza minima in corso · Esc per annullare")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def cancel(self, context):
+        self.job.close()
+        context.window_manager.event_timer_remove(self.timer)
+        self.workspace.status_text_set(None)
+
+    def modal(self, context, event):
+        if event.type == "ESC" and event.value == "PRESS":
+            self.cancel(context)
+            return {"CANCELLED"}
+        if event.type != "TIMER":
+            return {"RUNNING_MODAL"}
         try:
-            copies = correction.create_corrected_copies(
-                context, selected_meshes(context),
-                scene.mesh_distance_clearance_mm * millimeter, millimeter,
-            )
+            copies = self.job.advance(0.025)
+        except correction.CorrectionError as error:
+            self.cancel(context)
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        except Exception:
+            self.cancel(context)
+            raise
+        if copies is None:
+            return {"RUNNING_MODAL"}
+        self.cancel(context)
+        return self.finish(context, copies)
+
+    def execute(self, context):
+        self.start(context)
+        try:
+            copies = self.job.advance(60)
         except correction.CorrectionError as error:
             self.report({"WARNING"}, str(error))
             return {"CANCELLED"}
+        finally:
+            self.job.close()
+        return self.finish(context, copies)
+
+    def finish(self, context, copies):
+        scene = context.scene
         if not copies:
             self.report({"INFO"}, "Le mesh rispettano già la distanza minima.")
             return {"FINISHED"}
@@ -353,6 +398,7 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
             heatmap.operator(MESH_OT_distance_heatmap.bl_idname)
             repair = layout.column(align=True)
             repair.prop(context.scene, "mesh_distance_clearance_mm")
+            repair.operator_context = "INVOKE_DEFAULT"
             repair.operator(MESH_OT_correct_clearance.bl_idname)
 
         data = overlay.results.get(context.scene.as_pointer())

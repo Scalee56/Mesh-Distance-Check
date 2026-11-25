@@ -30,7 +30,9 @@ Le sovrapposizioni sono istantanee della geometria al momento della misura. Rica
 
 ## Correzione della distanza minima
 
-In modalità Oggetto seleziona almeno due mesh, imposta **Distanza minima (mm)** (predefinita a **0,30 mm**) e premi **Correggi distanza minima**. La correzione cerca di spostare localmente i vertici delle mesh selezionate, distribuendo lo spostamento sui lati vicini. Usa la geometria risultante dai modificatori e la scala unità della scena per convertire i millimetri.
+In modalità Oggetto seleziona almeno due mesh, imposta **Distanza minima (mm)** (predefinita a **0,30 mm**) e premi **Correggi distanza minima**. La correzione usa i punti effettivamente sotto soglia, anche se cadono all’interno di una faccia, e distribuisce lo spostamento sui due lati. Durante il calcolo puoi premere **Esc**. Se il lavoro supera 20 secondi, l’operazione si interrompe e scarta i dati provvisori. Usa la geometria risultante dai modificatori e la scala unità della scena per convertire i millimetri.
+
+Per vedere quali zone richiedono una correzione, imposta **Fine scala** allo stesso valore di **Distanza minima (mm)** e ricalcola la heatmap. Con la scala automatica il rosso può indicare la distanza più piccola della selezione anche se è già sopra soglia.
 
 Se la verifica riesce, troverai selezionate le copie con suffisso **Distanza**. Includono i modificatori applicati alla geometria. Gli originali restano nella scena, nascosti nella vista corrente. Puoi mostrarli di nuovo dall'Outliner oppure annullare l'operazione con **Ctrl+Z**.
 
