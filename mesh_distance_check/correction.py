@@ -36,7 +36,6 @@ class Component:
         self.original_points = list(self.points)
         mesh.calc_loop_triangles()
         self.faces = [tuple(face.vertices) for face in mesh.loop_triangles]
-        self.normals = normals_for(self.points, self.faces)
 
     def triangles(self):
         return [tuple(self.points[i] for i in face) for face in self.faces]
@@ -86,12 +85,19 @@ def check_thickness(component, minimum, affected, resolution):
         yield
         a, b, c = triangles[index]
         normal = face_normals[index]
+        face_vertices = set(component.faces[index])
         # Sample inside each face as an additional guard on slanted walls.
         samples = max(1, ceil(lengths[index] / spacing)) if spacing else 1
         for point in face_samples(a, b, c, samples):
             yield
-            _, _, hit, distance = tree.ray_cast(point - normal * offset, -normal, ray_limit)
-            opposite = hit is not None and normal.dot(face_normals[hit]) < -0.15
+            directions = (-normal,) if closed else (-normal, normal)
+            opposite = False
+            for direction in directions:
+                _, _, hit, distance = tree.ray_cast(point + direction * offset, direction, ray_limit)
+                if (hit is not None and direction.dot(face_normals[hit]) > 0.15
+                        and face_vertices.isdisjoint(component.faces[hit])):
+                    opposite = True
+                    break
             if opposite and distance + offset < minimum:
                 raise CorrectionError(f"{component.obj.name}: spessore sotto 1 mm lungo una parete.")
             if not closed and not opposite:
@@ -121,12 +127,10 @@ def check_thickness(component, minimum, affected, resolution):
                         )
 
 
-def check_surface(component, affected, check_orientation=True):
+def check_surface(component, affected):
     normals = normals_for(component.points, component.faces)
     if any(normals[i].length_squared == 0 for i in affected):
         raise CorrectionError(f"{component.obj.name}: facce degeneri nella zona deformata.")
-    if check_orientation and any(component.normals[i].dot(normals[i]) <= 0 for i in affected):
-        raise CorrectionError(f"{component.obj.name}: la correzione ribalta una faccia.")
 
     changed = [component.faces[i] for i in affected]
     changed_tree = BVHTree.FromPolygons(component.points, changed, all_triangles=True)
@@ -348,17 +352,15 @@ def adjust(components, target, minimum, resolution):
         moved = {i for i, (old, new) in enumerate(
             zip(component.original_points, component.points)
         ) if old != new}
-        affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
-        if not affected:
+        if not moved:
             continue
-        check_surface(component, affected)
-        yield
         component.mesh.update()
         component.mesh.calc_loop_triangles()
         component.faces = [tuple(face.vertices) for face in component.mesh.loop_triangles]
         affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
-        check_surface(component, affected, check_orientation=False)
-        yield from check_thickness(component, minimum, affected, resolution)
+        if affected:
+            check_surface(component, affected)
+            yield from check_thickness(component, minimum, affected, resolution)
 
     if (yield from violation(components, target)) is not None:
         raise CorrectionError("La geometria finale non rispetta la distanza richiesta.")
