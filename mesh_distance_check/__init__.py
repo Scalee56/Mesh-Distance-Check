@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 4, 5),
+    "version": (0, 4, 6),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -341,7 +341,7 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
         if event.type != "TIMER":
             return {"RUNNING_MODAL"}
         try:
-            copies = self.job.advance(0.025)
+            result = self.job.advance(0.025)
         except correction.CorrectionError as error:
             self.cancel(context)
             self.report({"WARNING"}, str(error))
@@ -349,33 +349,38 @@ class MESH_OT_correct_clearance(bpy.types.Operator):
         except Exception:
             self.cancel(context)
             raise
-        if copies is None:
+        if result is None:
             if self.phase != self.job.phase:
                 self.phase = self.job.phase
                 self.workspace.status_text_set(f"{self.phase} · Esc per annullare")
             return {"RUNNING_MODAL"}
         self.cancel(context)
-        return self.finish(context, copies)
+        return self.finish(context, result)
 
     def execute(self, context):
         self.start(context)
         try:
-            copies = self.job.advance(float("inf"))
+            result = self.job.advance(float("inf"))
         except correction.CorrectionError as error:
             self.report({"WARNING"}, str(error))
             return {"CANCELLED"}
         finally:
             self.job.close()
-        return self.finish(context, copies)
+        return self.finish(context, result)
 
-    def finish(self, context, copies):
+    def finish(self, context, result):
+        copies, warnings = result
         scene = context.scene
         if not copies:
             self.report({"INFO"}, "Le mesh rispettano già la distanza minima.")
             return {"FINISHED"}
         overlay.results.pop(scene.as_pointer(), None)
+        if warnings:
+            overlay.scene_results(scene).correction_warnings = warnings
+            self.report({"WARNING"}, "Copie corrette. " + " | ".join(warnings))
+        else:
+            self.report({"INFO"}, f"Correzione verificata su {len(copies)} copie. Originali nascosti.")
         overlay.redraw()
-        self.report({"INFO"}, f"Correzione verificata su {len(copies)} copie. Originali nascosti.")
         return {"FINISHED"}
 
 
@@ -415,6 +420,13 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
                 layout.label(text=f"Sonde: {len(data.probes)}")
                 layout.label(text=data.probes[-1].label)
                 layout.operator(MESH_OT_clear_distance_probes.bl_idname)
+            if data.correction_warnings:
+                warnings = layout.box()
+                warnings.label(text="Avvisi spessore", icon="ERROR")
+                for message in data.correction_warnings:
+                    name, _, detail = message.partition(": ")
+                    warnings.label(text=name)
+                    warnings.label(text=detail)
             layout.operator(MESH_OT_clear_distance_overlay.bl_idname)
 
 

@@ -15,6 +15,10 @@ class CorrectionError(Exception):
     pass
 
 
+class ThicknessWarning(Exception):
+    pass
+
+
 def normals_for(points, faces):
     normals = []
     for i, j, k in faces:
@@ -130,9 +134,9 @@ def check_thickness(component, minimum, affected, resolution):
                 face_normals, face_vertices, closed,
             )
             if thickness is not None and thickness < minimum:
-                raise CorrectionError(f"{component.obj.name}: spessore sotto 1 mm lungo una parete.")
+                raise ThicknessWarning(f"{component.obj.name}: spessore sotto 1 mm lungo una parete.")
             if not closed and thickness is None:
-                raise CorrectionError(
+                raise ThicknessWarning(
                     f"{component.obj.name}: parete opposta assente o non verificabile nella zona deformata."
                 )
     pending = [(geometry.Node([triangles[i] for i in affected]), geometry.Node(triangles))]
@@ -153,7 +157,7 @@ def check_thickness(component, minimum, affected, resolution):
                         continue
                     pair = geometry.closest_triangles(first, second)
                     if geometry.distance_squared(pair) < squared:
-                        raise CorrectionError(
+                        raise ThicknessWarning(
                             f"{component.obj.name}: pareti contrapposte sotto 1 mm."
                         )
 
@@ -363,7 +367,7 @@ def adjust(components, target, minimum, resolution):
     current = yield from violation(components, target)
     moved = any(component.points != component.original_points for component in components)
     if current is None and not moved:
-        return False
+        return False, []
 
     for _ in range(12):
         if current is None:
@@ -378,6 +382,7 @@ def adjust(components, target, minimum, resolution):
         raise CorrectionError("La soglia non è raggiungibile con questa correzione locale.")
 
     yield "Controllo dello spessore e della distanza finale"
+    warnings = []
     for component in components:
         yield
         moved = {i for i, (old, new) in enumerate(
@@ -391,11 +396,14 @@ def adjust(components, target, minimum, resolution):
         affected = {i for i, face in enumerate(component.faces) if moved.intersection(face)}
         if affected:
             check_surface(component, affected)
-            yield from check_thickness(component, minimum, affected, resolution)
+            try:
+                yield from check_thickness(component, minimum, affected, resolution)
+            except ThicknessWarning as warning:
+                warnings.append(str(warning))
 
     if (yield from violation(components, target)) is not None:
         raise CorrectionError("La geometria finale non rispetta la distanza richiesta.")
-    return True
+    return True, warnings
 
 
 class CorrectionJob:
@@ -437,8 +445,9 @@ def create_corrected_copies(context, objects, target, minimum, resolution):
                 components.append(Component(obj, mesh, evaluated.matrix_world))
             except ValueError as error:
                 raise CorrectionError(f"{obj.name}: la trasformazione della mesh è singolare.") from error
-        if not (yield from adjust(components, target, minimum, resolution)):
-            return []
+        changed, warnings = yield from adjust(components, target, minimum, resolution)
+        if not changed:
+            return [], []
         for component in components:
             component.mesh.update()
             copy = bpy.data.objects.new(f"{component.obj.name} · Distanza", component.mesh)
@@ -454,7 +463,7 @@ def create_corrected_copies(context, objects, target, minimum, resolution):
             if obj == active:
                 context.view_layer.objects.active = copy
         complete = True
-        return copies
+        return copies, warnings
     finally:
         if not complete:
             for copy in copies:

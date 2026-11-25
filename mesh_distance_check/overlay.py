@@ -46,6 +46,7 @@ class Results:
     def __init__(self):
         self.minimum = None
         self.probes = []
+        self.correction_warnings = []
         self.heatmap = None
         self.batch = None
         self.legend_batch = None
