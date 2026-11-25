@@ -20,6 +20,14 @@ La legenda usa una scala comune che va dal rosso (vicino) al blu (lontano). Con 
 
 La heatmap usa campioni aggiuntivi dentro le facce e interpola i valori sulla superficie. Aumenta **Risoluzione** per mostrare zone di vicinanza più piccole e ricalcola. Il pannello indica il passo di campionamento stimato. Nelle scene dense, l'add-on limita la suddivisione della visualizzazione. La linea gialla usa una ricerca spaziale separata sulle superfici, indipendente dalla risoluzione e dalla scala della heatmap.
 
+## Zone critiche e Vertex Groups
+
+1. Imposta **Distanza minima (mm)** e premi **Mostra heatmap** in modalità Oggetto.
+2. Con **Seleziona entrando in Modifica** attivo, entra in modalità Modifica sui componenti analizzati. Puoi anche premere **Seleziona zone critiche** per entrare in Modifica o rifare la selezione.
+3. Nel pannello **Vertex Groups**, scegli o crea un gruppo e premi **Assign**. Per assegnare gruppi diversi, usa il gruppo del componente attivo.
+
+La selezione usa la soglia in millimetri e i campioni della heatmap. Se un’area critica cade all’interno di un triangolo privo di vertici sotto soglia, seleziona i vertici di quel triangolo. Ricalcola la heatmap dopo aver cambiato soglia o geometria. I modificatori che cambiano la corrispondenza con i vertici originali possono impedire la selezione sul relativo oggetto.
+
 ## Sonda
 
 In modalità Oggetto premi **Sonda (clic per misurare)** e fai clic sulla superficie di una mesh inclusa nell'analisi. La linea verde va dal punto sotto il cursore al punto più vicino su un'altra mesh del gruppo. Puoi piazzare più sonde in sequenza. Premi **Esc** o il tasto destro per terminare, e **Cancella sonde** per rimuoverle dalla viewport.

@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 4, 7),
+    "version": (0, 5, 0),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -41,13 +41,21 @@ def analysis_surfaces(context, objects):
     return [(obj, surface) for obj, surface in surfaces if surface[1]]
 
 
-def evaluated_surface(obj, depsgraph):
+def evaluated_surface(obj, depsgraph, topology=None):
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
     if mesh is None:
         return [], []
     try:
         mesh.calc_loop_triangles()
+        if topology is not None:
+            original = obj.data
+            if (len(mesh.vertices) == len(original.vertices)
+                    and len(mesh.polygons) == len(original.polygons)
+                    and all(tuple(a.vertices) == tuple(b.vertices)
+                            for a, b in zip(mesh.polygons, original.polygons))):
+                coordinates = hash(tuple(tuple(vertex.co) for vertex in original.vertices))
+                topology[obj] = (original, len(mesh.polygons), obj.matrix_world.copy(), coordinates)
         points = [evaluated.matrix_world @ vertex.co for vertex in mesh.vertices]
         faces = [tuple(triangle.vertices) for triangle in mesh.loop_triangles]
         return points, faces
@@ -124,16 +132,24 @@ class MESH_OT_distance_heatmap(bpy.types.Operator):
         return MESH_OT_check_surface_distance.poll(context)
 
     def execute(self, context):
-        surfaces = [surface for _, surface in analysis_surfaces(context, analysis_meshes(context))]
-        if len(surfaces) < 2:
+        topology = {}
+        depsgraph = context.evaluated_depsgraph_get()
+        measured = [(obj, evaluated_surface(obj, depsgraph, topology)) for obj in analysis_meshes(context)]
+        measured = [(obj, surface) for obj, surface in measured if surface[1]]
+        if len(measured) < 2:
             self.report({"ERROR"}, "Servono almeno due mesh con facce.")
             return {"CANCELLED"}
 
+        surfaces = [surface for _, surface in measured]
         trees = [(index, surface_bvh(surface)) for index, surface in enumerate(surfaces)]
         scene = context.scene
         cutoff = scene.mesh_distance_scale_max or None
+        threshold = scene.mesh_distance_clearance_mm * 0.001 / scene.unit_settings.scale_length
+        critical = [set() for _ in measured]
+        sampling_limit = max(cutoff, threshold) if cutoff is not None else None
         points, faces, distances, spacing = geometry.sample_surfaces(
-            surfaces, trees, scene.mesh_distance_resolution, cutoff=cutoff
+            surfaces, trees, scene.mesh_distance_resolution, cutoff=sampling_limit,
+            critical=(threshold, critical),
         )
         if cutoff is None:
             low, high = min(distances), max(distances)
@@ -147,8 +163,98 @@ class MESH_OT_distance_heatmap(bpy.types.Operator):
         )
         data.batch = None
         data.legend_batch = None
+        data.critical_vertices = {
+            obj: (*topology[obj], vertices)
+            for (obj, _), vertices in zip(measured, critical) if obj in topology
+        }
+        data.critical_skipped = {obj for obj, _ in measured if obj not in topology}
+        data.critical_threshold = threshold
         overlay.redraw()
         return {"FINISHED"}
+
+
+def select_critical_vertices(context, data):
+    threshold = context.scene.mesh_distance_clearance_mm * 0.001 / context.scene.unit_settings.scale_length
+    if threshold != data.critical_threshold:
+        return None, ["Ricalcola la heatmap dopo aver cambiato la soglia."]
+
+    edits, skipped = [], []
+    for obj in context.objects_in_mode_unique_data:
+        entry = data.critical_vertices.get(obj)
+        if entry is None:
+            if obj in data.critical_skipped:
+                skipped.append(obj.name)
+            continue
+        mesh, face_count, transform, coordinates, indices = entry
+        bm = bmesh.from_edit_mesh(obj.data)
+        if (obj.data != mesh or len(bm.faces) != face_count or obj.matrix_world != transform
+                or hash(tuple(tuple(vertex.co) for vertex in bm.verts)) != coordinates):
+            skipped.append(obj.name)
+            continue
+        edits.append((obj, bm, indices))
+
+    if not edits:
+        return None, skipped
+    context.tool_settings.mesh_select_mode = (True, False, False)
+    selected = 0
+    for obj, bm, indices in edits:
+        bm.verts.index_update()
+        bm.select_mode = {"VERT"}
+        bm.select_history.clear()
+        for collection in (bm.faces, bm.edges):
+            for element in collection:
+                element.select = False
+        for vertex in bm.verts:
+            vertex.select_set(not vertex.hide and vertex.index in indices)
+            selected += vertex.select
+        bm.select_flush_mode()
+        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+    overlay.redraw()
+    return selected, skipped
+
+
+class MESH_OT_select_critical_distance(bpy.types.Operator):
+    bl_idname = "mesh.select_critical_distance"
+    bl_label = "Seleziona zone critiche"
+    bl_description = "Seleziona i vertici delle facce con campioni sotto la distanza minima"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        data = overlay.results.get(context.scene.as_pointer())
+        return context.mode in {"OBJECT", "EDIT_MESH"} and data is not None and data.heatmap is not None
+
+    def execute(self, context):
+        data = overlay.results[context.scene.as_pointer()]
+        if context.mode == "OBJECT":
+            if not any(obj in data.critical_vertices for obj in selected_meshes(context)):
+                self.report({"WARNING"}, "Seleziona almeno una mesh analizzata con topologia compatibile.")
+                return {"CANCELLED"}
+            bpy.ops.object.mode_set(mode="EDIT")
+        count, skipped = select_critical_vertices(context, data)
+        data.critical_edit_object = context.edit_object
+        if skipped:
+            self.report({"WARNING"}, "Selezione da aggiornare o indisponibile: " + ", ".join(skipped))
+        if count is None:
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Vertici critici selezionati: {count}")
+        return {"FINISHED"}
+
+
+def auto_select_critical():
+    context = bpy.context
+    scene = context.scene
+    if scene is None:
+        return 0.25
+    data = overlay.results.get(scene.as_pointer())
+    if data is None or data.heatmap is None:
+        return 0.25
+    obj = context.edit_object if context.mode == "EDIT_MESH" else None
+    if obj != data.critical_edit_object:
+        data.critical_edit_object = obj
+        if obj is not None and scene.mesh_distance_auto_critical:
+            select_critical_vertices(context, data)
+    return 0.25
 
 
 def mesh_only(_scene, obj):
@@ -396,6 +502,7 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         if context.mode == "EDIT_MESH":
+            layout.operator(MESH_OT_select_critical_distance.bl_idname)
             layout.prop(context.scene, "mesh_distance_probe_target", text="Destinazione")
             layout.operator(MESH_OT_distance_probe.bl_idname)
         else:
@@ -408,6 +515,8 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
             heatmap.prop(context.scene, "mesh_distance_resolution")
             heatmap.prop(context.scene, "mesh_distance_scale_max")
             heatmap.operator(MESH_OT_distance_heatmap.bl_idname)
+            heatmap.prop(context.scene, "mesh_distance_auto_critical")
+            heatmap.operator(MESH_OT_select_critical_distance.bl_idname)
             repair = layout.column(align=True)
             repair.prop(context.scene, "mesh_distance_clearance_mm")
             repair.operator_context = "INVOKE_DEFAULT"
@@ -441,6 +550,7 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
 classes = (
     MESH_OT_check_surface_distance,
     MESH_OT_distance_heatmap,
+    MESH_OT_select_critical_distance,
     MESH_OT_distance_probe,
     MESH_OT_click_distance_probe,
     MESH_OT_clear_distance_probes,
@@ -477,11 +587,21 @@ def register():
         name="Distanza minima (mm)", default=0.3, min=0.001, precision=3,
         description="Distanza richiesta tra le copie delle mesh selezionate, in millimetri",
     )
+    bpy.types.Scene.mesh_distance_auto_critical = bpy.props.BoolProperty(
+        name="Seleziona entrando in Modifica",
+        description="Seleziona le zone critiche dell’ultima heatmap quando entri in Modalità Modifica",
+        default=True,
+    )
     overlay.register()
+    if not bpy.app.background:
+        bpy.app.timers.register(auto_select_critical, persistent=True)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(auto_select_critical):
+        bpy.app.timers.unregister(auto_select_critical)
     overlay.unregister()
+    del bpy.types.Scene.mesh_distance_auto_critical
     del bpy.types.Scene.mesh_distance_clearance_mm
     del bpy.types.Scene.mesh_distance_scale_max
     del bpy.types.Scene.mesh_distance_resolution

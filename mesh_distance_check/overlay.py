@@ -48,6 +48,10 @@ class Results:
         self.probes = []
         self.correction_warnings = []
         self.correction_issues = []
+        self.critical_vertices = {}
+        self.critical_skipped = set()
+        self.critical_threshold = None
+        self.critical_edit_object = None
         self.heatmap = None
         self.batch = None
         self.legend_batch = None

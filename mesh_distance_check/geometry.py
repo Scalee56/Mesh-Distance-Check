@@ -241,7 +241,7 @@ class ComponentZone:
         return limit
 
 
-def sample_surfaces(surfaces, trees, resolution, cutoff=None):
+def sample_surfaces(surfaces, trees, resolution, cutoff=None, critical=None):
     """Subdivide long triangles in the heatmap, pruning zones beyond the color range."""
     all_triangles, bounds = [], []
     for points, faces in surfaces:
@@ -310,8 +310,21 @@ def sample_surfaces(surfaces, trees, resolution, cutoff=None):
             emit(ab, bc, ca, level - 1)
 
         for index, (a, b, c, length) in enumerate(triangles):
+            start = len(faces)
             if (component, index) in far_triangles:
                 faces.append((sample(a, True), sample(b, True), sample(c, True)))
             else:
                 emit(a, b, c, depth(length), check_range=False)
+            if critical is not None and (component, index) not in far_triangles:
+                threshold, vertices = critical
+                original = surfaces[component][1][index]
+                close_vertices = {
+                    vertex for vertex, point in zip(original, (a, b, c))
+                    if distances[sample(point)] < threshold
+                }
+                if close_vertices:
+                    vertices[component].update(close_vertices)
+                elif any(distances[i] < threshold for face in faces[start:] for i in face):
+                    # A critical region in a face interior has no editable sample vertex.
+                    vertices[component].update(original)
     return points, faces, distances, spacing
