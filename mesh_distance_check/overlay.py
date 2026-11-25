@@ -50,7 +50,8 @@ class Results:
         self.correction_issues = []
         self.critical_vertices = {}
         self.critical_skipped = set()
-        self.critical_threshold = None
+        self.heatmap_sample_limit = None
+        self.heatmap_scale_max = None
         self.critical_edit_object = None
         self.heatmap = None
         self.batch = None

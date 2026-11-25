@@ -22,11 +22,11 @@ La heatmap usa campioni aggiuntivi dentro le facce e interpola i valori sulla su
 
 ## Zone critiche e Vertex Groups
 
-1. Imposta **Distanza minima (mm)** e premi **Mostra heatmap** in modalità Oggetto.
+1. Imposta **Fine scala** e premi **Mostra heatmap** in modalità Oggetto.
 2. Con **Seleziona entrando in Modifica** attivo, entra in modalità Modifica sui componenti analizzati. Puoi anche premere **Seleziona zone critiche** per entrare in Modifica o rifare la selezione.
 3. Nel pannello **Vertex Groups**, scegli o crea un gruppo e premi **Assign**. Per assegnare gruppi diversi, usa il gruppo del componente attivo.
 
-La selezione usa la soglia in millimetri e i campioni della heatmap. Se un’area critica cade all’interno di un triangolo privo di vertici sotto soglia, seleziona i vertici di quel triangolo. Ricalcola la heatmap dopo aver cambiato soglia o geometria. I modificatori che cambiano la corrispondenza con i vertici originali possono impedire la selezione sul relativo oggetto.
+La selezione segue la fascia dal rosso al rosso-magenta, il primo 20% della scala visibile. Se la nuova scala supera i dati campionati, il pannello chiede di ricalcolare la heatmap. Se una zona rossa cade tutta all’interno di una faccia, non vengono selezionati vertici esterni alla fascia. Ricalcola la heatmap dopo aver modificato la geometria. I modificatori che cambiano la corrispondenza con i vertici originali possono impedire la selezione sul relativo oggetto.
 
 ## Sonda
 
