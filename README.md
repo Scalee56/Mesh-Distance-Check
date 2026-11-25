@@ -28,6 +28,14 @@ In modalità Modifica puoi anche selezionare un vertice e premere **Misura dal v
 
 Le sovrapposizioni sono istantanee della geometria al momento della misura. Ricalcolale dopo aver spostato o modificato le mesh. **Cancella risultati** rimuove tutte le sovrapposizioni dell'add-on.
 
+## Correzione della distanza minima
+
+In modalità Oggetto seleziona almeno due mesh, imposta **Distanza minima (mm)** (predefinita a **0,30 mm**) e premi **Correggi distanza minima**. La correzione cerca di spostare localmente i vertici delle mesh selezionate, distribuendo lo spostamento sui lati vicini. Usa la geometria risultante dai modificatori e la scala unità della scena per convertire i millimetri.
+
+Se la verifica riesce, troverai selezionate le copie con suffisso **Distanza**. Includono i modificatori applicati alla geometria. Gli originali restano nella scena, nascosti nella vista corrente. Puoi mostrarli di nuovo dall'Outliner oppure annullare l'operazione con **Ctrl+Z**.
+
+Il controllo di **1 mm** combina la distanza geometrica fra facce contrapposte con sonde interne sulle facce. La verifica è conservativa e può respingere anche alcuni dettagli acuti o ravvicinati della stessa mesh. Non sostituisce una verifica dello spessore per la produzione. Se rileva una parete sotto soglia, una mesh aperta, un'intersezione o una distanza insufficiente dopo la correzione, mostra un avviso e scarta le copie. Le mesh già a contatto o intersecate devono essere leggermente separate prima di eseguire la correzione.
+
 ## Prova rapida
 
 Crea tre cubi standard larghi 2 unità con centri a X = −4, 0 e 3. Selezionali tutti. Il minimo globale atteso è 1 unità Blender, tra il cubo centrale e quello a destra. La heatmap deve coprire tutti e tre i cubi con la stessa scala.

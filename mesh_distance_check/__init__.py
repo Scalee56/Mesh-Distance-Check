@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Mesh Distance Check",
-    "version": (0, 3, 1),
+    "version": (0, 4, 0),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra laterale > Mesh Distance",
     "description": "Mostra distanze, heatmap e sonda tra superfici mesh",
@@ -19,8 +19,10 @@ from mathutils.bvhtree import BVHTree
 # child modules in memory. Import both children from the newly installed files.
 sys.modules.pop(f"{__name__}.geometry", None)
 sys.modules.pop(f"{__name__}.overlay", None)
+sys.modules.pop(f"{__name__}.correction", None)
 geometry = import_module(".geometry", __name__)
 overlay = import_module(".overlay", __name__)
+correction = import_module(".correction", __name__)
 
 
 def selected_meshes(context):
@@ -298,6 +300,36 @@ class MESH_OT_clear_distance_overlay(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class MESH_OT_correct_clearance(bpy.types.Operator):
+    bl_idname = "mesh.correct_clearance"
+    bl_label = "Correggi distanza minima"
+    bl_description = "Deforma localmente copie delle mesh selezionate e controlla le pareti da 1 mm"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and len(selected_meshes(context)) >= 2
+
+    def execute(self, context):
+        scene = context.scene
+        millimeter = 0.001 / scene.unit_settings.scale_length
+        try:
+            copies = correction.create_corrected_copies(
+                context, selected_meshes(context),
+                scene.mesh_distance_clearance_mm * millimeter, millimeter,
+            )
+        except correction.CorrectionError as error:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        if not copies:
+            self.report({"INFO"}, "Le mesh rispettano già la distanza minima.")
+            return {"FINISHED"}
+        overlay.results.pop(scene.as_pointer(), None)
+        overlay.redraw()
+        self.report({"INFO"}, f"Correzione verificata su {len(copies)} copie. Originali nascosti.")
+        return {"FINISHED"}
+
+
 class VIEW3D_PT_surface_distance(bpy.types.Panel):
     bl_label = "Distanza tra mesh"
     bl_space_type = "VIEW_3D"
@@ -319,6 +351,9 @@ class VIEW3D_PT_surface_distance(bpy.types.Panel):
             heatmap.prop(context.scene, "mesh_distance_resolution")
             heatmap.prop(context.scene, "mesh_distance_scale_max")
             heatmap.operator(MESH_OT_distance_heatmap.bl_idname)
+            repair = layout.column(align=True)
+            repair.prop(context.scene, "mesh_distance_clearance_mm")
+            repair.operator(MESH_OT_correct_clearance.bl_idname)
 
         data = overlay.results.get(context.scene.as_pointer())
         if data is not None:
@@ -340,6 +375,7 @@ classes = (
     MESH_OT_click_distance_probe,
     MESH_OT_clear_distance_probes,
     MESH_OT_clear_distance_overlay,
+    MESH_OT_correct_clearance,
     VIEW3D_PT_surface_distance,
 )
 
@@ -367,11 +403,16 @@ def register():
         description="Distanza corrispondente al blu. Zero usa il range comune misurato",
         default=0, min=0, subtype="DISTANCE", unit="LENGTH", precision=4,
     )
+    bpy.types.Scene.mesh_distance_clearance_mm = bpy.props.FloatProperty(
+        name="Distanza minima (mm)", default=0.3, min=0.001, precision=3,
+        description="Distanza richiesta tra le copie delle mesh selezionate, in millimetri",
+    )
     overlay.register()
 
 
 def unregister():
     overlay.unregister()
+    del bpy.types.Scene.mesh_distance_clearance_mm
     del bpy.types.Scene.mesh_distance_scale_max
     del bpy.types.Scene.mesh_distance_resolution
     del bpy.types.Scene.mesh_distance_all_visible
